@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}评论 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>评论管理</h1>
+<p class="hint">输入视频 ID（aweme_id，或视频链接中的数字 id），抓取评论列表。</p>
+
+<div class="toolbar">
+  <input id="vid" placeholder="视频 ID，如 7300000000000000000" size="30">
+  <button id="load" class="primary" type="button">抓取评论</button>
+  <span id="status" class="muted"></span>
+</div>
+
+<table id="tbl">
+  <thead><tr><th>用户</th><th>评论</th><th>时间</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<script>
+  async function load() {
+    const vid = document.getElementById('vid').value.trim();
+    const statusEl = document.getElementById('status');
+    if (!vid) { statusEl.textContent = '请先输入视频 ID'; return; }
+    statusEl.textContent = '抓取中…';
+    try {
+      const resp = await fetch('/api/comments?aweme_id=' + encodeURIComponent(vid));
+      const j = await resp.json();
+      if (!j.ok) { statusEl.textContent = '失败: ' + (j.error || ''); return; }
+      const items = j.data || [];
+      const rows = document.getElementById('rows');
+      rows.innerHTML = items.map(function (c) {
+        return '<tr><td>' + (c.nickname || '-') + '</td><td>' +
+          (c.text || c.content || '-') + '</td><td>' + (c.time || '-') + '</td></tr>';
+      }).join('') || '<tr><td colspan="3" class="empty">暂无评论</td></tr>';
+      statusEl.textContent = '共 ' + items.length + ' 条';
+    } catch (e) {
+      statusEl.textContent = '错误: ' + e;
+    }
+  }
+  document.getElementById('load').addEventListener('click', load);
+</script>
+{% endblock %}

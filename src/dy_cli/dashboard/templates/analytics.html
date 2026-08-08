@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}数据分析 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>数据分析</h1>
+<p class="hint">基于已就绪账号的创作者数据看板（首次加载会启动浏览器抓取，稍候数秒）。</p>
+
+<div class="toolbar">
+  <button id="refresh" class="primary" type="button">刷新数据</button>
+  <span id="status" class="muted"></span>
+</div>
+
+<div id="metrics" class="cards"></div>
+
+<div class="panel">
+  <h2>抓取详情</h2>
+  <pre id="raw" class="muted" style="white-space: pre-wrap;"></pre>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+  const metricsEl = document.getElementById('metrics');
+  const rawEl = document.getElementById('raw');
+  const statusEl = document.getElementById('status');
+
+  async function load() {
+    statusEl.textContent = '抓取中…';
+    try {
+      const resp = await fetch('/api/analytics');
+      const j = await resp.json();
+      if (!j.ok) { statusEl.textContent = '失败: ' + (j.error || ''); return; }
+      const data = j.data || {};
+      const summary = data.summary || {};
+      metricsEl.innerHTML = '';
+      const labels = [], values = [];
+      Object.entries(summary).forEach(([k, v]) => {
+        const num = parseFloat(String(v).replace(/[, ]/g, ''));
+        if (!isNaN(num)) { labels.push(k); values.push(num); }
+        metricsEl.insertAdjacentHTML('beforeend',
+          '<div class="card"><div class="num">' + v + '</div><div class="label">' + k + '</div></div>');
+      });
+      rawEl.textContent = JSON.stringify(data, null, 2);
+      if (labels.length) {
+        const ctx = document.createElement('canvas');
+        document.querySelector('.panel').appendChild(ctx);
+        new Chart(ctx, {
+          type: 'bar',
+          data: { labels, datasets: [{ label: '指标', data: values, backgroundColor: '#fe2c55' }] },
+          options: { responsive: true },
+        });
+      }
+      statusEl.textContent = '已更新';
+    } catch (e) {
+      statusEl.textContent = '错误: ' + e;
+    }
+  }
+
+  document.getElementById('refresh').addEventListener('click', load);
+  load();
+</script>
+{% endblock %}

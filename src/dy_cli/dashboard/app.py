@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -135,7 +135,7 @@ def create_app() -> FastAPI:
             {
                 "ok": True,
                 "session_id": result["session_id"],
-                "qr_data_url": result["qr_data_url"],
+                "qr_image_url": result["qr_image_url"],
             }
         )
 
@@ -144,6 +144,15 @@ def create_app() -> FastAPI:
         if not session:
             return JSONResponse({"status": "gone"})
         return JSONResponse(app.state.qr_manager.status(session))
+
+    @app.get("/api/accounts/qr-image")
+    def api_qr_image(session: str = ""):
+        if not session:
+            return JSONResponse({"error": "missing session"}, status_code=400)
+        path = app.state.qr_manager.qr_image(session)
+        if not path or not Path(path).is_file():
+            return JSONResponse({"error": "not ready"}, status_code=404)
+        return FileResponse(path, media_type="image/png")
 
     @app.get("/api/accounts")
     def api_accounts():
@@ -267,5 +276,65 @@ def create_app() -> FastAPI:
     def api_searches():
         jobs = db.list_search_jobs()
         return JSONResponse({"ok": True, "jobs": jobs})
+
+    # ── 数据分析 / 消息 / 评论（对齐 xhs 的 analytics / messages 能力）──────
+    def _first_ready_alias():
+        try:
+            for a in db.list_accounts():
+                if (a.get("login_status") or "") == "ready":
+                    return a["alias"]
+        except Exception:
+            pass
+        return None
+
+    @app.get("/analytics", response_class=HTMLResponse)
+    def analytics_page():
+        return _render("analytics.html")
+
+    @app.get("/messages", response_class=HTMLResponse)
+    def messages_page():
+        return _render("messages.html")
+
+    @app.get("/comments", response_class=HTMLResponse)
+    def comments_page():
+        return _render("comments.html")
+
+    @app.get("/api/analytics")
+    def api_analytics():
+        alias = _first_ready_alias()
+        if not alias:
+            return JSONResponse({"ok": False, "error": "无就绪账号，请先扫码绑定"}, status_code=400)
+        try:
+            from ..engines.playwright_client import PlaywrightClient
+
+            return JSONResponse({"ok": True, "data": PlaywrightClient(account=alias).get_analytics()})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    @app.get("/api/messages")
+    def api_messages():
+        alias = _first_ready_alias()
+        if not alias:
+            return JSONResponse({"ok": False, "error": "无就绪账号，请先扫码绑定"}, status_code=400)
+        try:
+            from ..engines.playwright_client import PlaywrightClient
+
+            return JSONResponse({"ok": True, "data": PlaywrightClient(account=alias).get_notifications()})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    @app.get("/api/comments")
+    def api_comments(aweme_id: str = ""):
+        if not aweme_id:
+            return JSONResponse({"ok": False, "error": "缺少 aweme_id"}, status_code=400)
+        alias = _first_ready_alias()
+        if not alias:
+            return JSONResponse({"ok": False, "error": "无就绪账号，请先扫码绑定"}, status_code=400)
+        try:
+            from ..engines.playwright_client import PlaywrightClient
+
+            return JSONResponse({"ok": True, "data": PlaywrightClient(account=alias).get_comments(aweme_id)})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     return app

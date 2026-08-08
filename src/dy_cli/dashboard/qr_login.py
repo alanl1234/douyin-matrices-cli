@@ -1,77 +1,90 @@
-"""Headless QR-code login sessions for the dashboard (网页内扫码绑定).
+"""Headless QR-code login for the dashboard, powered by Camoufox.
 
-The dashboard backend launches a *headless* Playwright browser, navigates to the
-Douyin creator login page, captures the QR image, and serves it to the web page.
-The user scans with the Douyin App; the backend polls the headless page for login
-completion, then persists ``storage_state`` to the account's cookie file and
-registers the account in the matrix DB.
+Why Camoufox: Douyin aggressively fingerprints bare headless Chromium
+(``navigator.webdriver`` exposed, no stealth) and frequently refuses to render
+the QR or drops the session. Camoufox is a Firefox-based anti-detection Playwright
+wrapper (humanize fingerprint randomization) and is used *only* for web QR login;
+publishing/scraping still use the existing Playwright async client unchanged.
 
-This reuses the QR / login page constants from
-``dy_cli.engines.playwright_client`` so the same capture & poll logic can also be
-driven from the CLI. Playwright itself is imported lazily so importing this module
-never requires the browser runtime (keeps CI import checks clean).
+Architecture fix (the old code polled a sync Playwright ``page`` from different
+FastAPI thread-pool threads, which crashed and was swallowed as "error"):
+- ``start()`` launches Camoufox inside ONE dedicated background thread that drives
+  the whole login poll loop; the page handle never crosses threads.
+- Main-thread ``status()`` / ``qr_image()`` / ``cancel()`` only read a thread-safe
+  state object or the QR PNG file; they never touch the browser.
+- On success, ``context.storage_state()`` exports a Playwright-compatible
+  storage_state JSON straight to ``~/.dy/cookies/<alias>.json``, so the existing
+  ``PlaywrightClient`` reuses it with zero changes (cookie bridge done here).
 """
 from __future__ import annotations
 
-import base64
 import os
 import threading
 import time
 import uuid
 from typing import Any, Callable
 
-# Default QR session lifetime. Douyin QR codes expire in ~2 minutes; we give a
-# little headroom and then report the session as expired.
+# Douyin QR codes live ~2 minutes; give headroom before reporting expired.
 SESSION_TTL_SECONDS = 180
 
+PROFILES_ROOT = os.path.join(os.path.expanduser("~"), ".dy", "camoufox_profiles")
+QR_IMAGES_ROOT = os.path.join(os.path.expanduser("~"), ".dy", "qr_images")
 
-def _safe_close(pw: Any, browser: Any) -> None:
-    try:
-        if browser is not None:
-            browser.close()
-    except Exception:
-        pass
-    try:
-        if pw is not None:
-            pw.stop()
-    except Exception:
-        pass
+# Any of these cookie names appearing means a logged-in session has landed.
+LOGIN_COOKIE_KEYS = ("sessionid_ss", "sid_tt", "sid_guard", "sessionid")
+
+
+def _ensure_dirs() -> None:
+    os.makedirs(PROFILES_ROOT, exist_ok=True)
+    os.makedirs(QR_IMAGES_ROOT, exist_ok=True)
 
 
 def _launch_qr_browser(alias: str):
-    """Launch a headless browser and open the Douyin login page.
+    """Launch Camoufox (persistent_context + anti-detect); return (browser, context, page).
 
-    Returns ``(pw, browser, context, page)``. Playwright's *sync* API is used so
-    the page handle can be polled from synchronous FastAPI handlers without an
-    event loop. Imported lazily.
+    Imports camoufox lazily so this module imports cleanly without the browser
+    runtime (keeps CI import checks green). Falls back to ``humanize=False`` if the
+    humanize fingerprint data is not fetched yet, so login still works (weaker
+    stealth, but not a hard failure).
     """
-    from playwright.sync_api import sync_playwright
+    from camoufox.sync_api import Camoufox
 
-    from ..engines.playwright_client import PlaywrightClient
-
-    pw = sync_playwright().start()
-    browser = pw.chromium.launch(headless=True)
-    context = browser.new_context(
-        viewport={"width": 1280, "height": 800},
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        ),
-    )
+    profile_dir = os.path.join(PROFILES_ROOT, alias)
+    os.makedirs(profile_dir, exist_ok=True)
+    try:
+        browser = Camoufox(
+            headless=True,
+            persistent_context=True,
+            user_data_dir=profile_dir,
+            humanize=True,
+            locale="zh-CN",
+        )
+    except Exception:
+        browser = Camoufox(
+            headless=True,
+            persistent_context=True,
+            user_data_dir=profile_dir,
+            humanize=False,
+            locale="zh-CN",
+        )
+    context = browser.contexts[0]
     page = context.new_page()
-    page.goto(PlaywrightClient.CREATOR_URL, wait_until="domcontentloaded")
-    # Let the login QR render.
-    page.wait_for_timeout(2000)
-    return pw, browser, context, page
+    # Douyin shows the scan-or-phone login dialog on the home page; open it and
+    # let the QR render. (Calibrate against the live Douyin login DOM if it changes.)
+    page.goto("https://www.douyin.com/", wait_until="domcontentloaded")
+    return browser, context, page
 
 
-def _capture_qr(page: Any) -> bytes | None:
-    """Extract the Douyin login QR as PNG bytes, or None if not found.
-
-    Douyin renders the QR on a ``<canvas>`` (or an ``<img>``). We try a few
-    candidate selectors, then fall back to screenshotting the element that
-    contains the "扫码登录" prompt.
-    """
+def _capture_qr(page: Any, png_path: str) -> bool:
+    """Screenshot the Douyin login QR to ``png_path``; True on success."""
+    # Prefer the scan-code tab if the dialog defaults to phone login.
+    try:
+        tab = page.get_by_text("扫码登录", exact=False).first
+        if tab.count() > 0:
+            tab.click()
+            page.wait_for_timeout(400)
+    except Exception:
+        pass
     candidates = [
         "canvas",
         'img[src*="qrcode"]',
@@ -79,150 +92,164 @@ def _capture_qr(page: Any) -> bytes | None:
         '[class*="qrcode"] img',
         '[class*="qr-code"] img',
         '[class*="scan"] canvas',
-        '[class*="login"] canvas',
+        'img[src*="login"]',
     ]
     for sel in candidates:
         try:
             el = page.locator(sel).first
             if el.count() > 0 and el.is_visible():
-                return el.screenshot()
+                el.screenshot(path=png_path)
+                return True
         except Exception:
             continue
-    # Fallback: the container around the 扫码登录 text.
+    # Fallback: the container around the 扫码登录 prompt.
     try:
         anchor = page.get_by_text("扫码登录", exact=False).first
         if anchor.count() > 0:
             container = anchor.locator("..")
             if container.count() > 0:
-                return container.screenshot()
-    except Exception:
-        pass
-    return None
-
-
-def _is_logged_in(page: Any) -> bool:
-    """True once the headless page reached the logged-in creator dashboard."""
-    try:
-        url = page.url
-    except Exception:
-        return False
-    if "creator-micro" in url:
-        return True
-    # Login modal dismissed and we are no longer on a passport/login host.
-    try:
-        if (
-            page.get_by_text("扫码登录", exact=False).count() == 0
-            and page.get_by_text("手机号登录", exact=False).count() == 0
-            and "passport" not in url
-            and "login" not in url
-        ):
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _is_qr_scanned(page: Any) -> bool:
-    """Best-effort: detect that the phone already scanned (pending confirm)."""
-    try:
-        for hint in ("扫描成功", "已扫描", "请在手机上确认"):
-            if page.get_by_text(hint, exact=False).count() > 0:
+                container.screenshot(path=png_path)
                 return True
     except Exception:
         pass
     return False
 
 
-def _collect_cookies(page: Any) -> None:
-    """Visit a couple of pages so the full cookie set is captured (mirrors CLI)."""
-    for url in [
-        "https://www.douyin.com/",
-        "https://creator.douyin.com/creator-micro/content/manage",
-    ]:
+def _login_cookies_present(context: Any) -> bool:
+    try:
+        cookies = context.cookies()
+    except Exception:
+        return False
+    names = {c.get("name") for c in cookies}
+    return any(k in names for k in LOGIN_COOKIE_KEYS)
+
+
+def _is_logged_in(page: Any, context: Any) -> bool:
+    if _login_cookies_present(context):
+        return True
+    try:
+        url = page.url
+    except Exception:
+        return False
+    if "creator-micro" in url:
+        return True
+    if "douyin.com" in url and "passport" not in url and "login" not in url:
+        return True
+    return False
+
+
+def _is_qr_scanned(page: Any) -> bool:
+    for hint in ("扫描成功", "已扫描", "请在手机上确认", "已扫码"):
         try:
-            page.goto(url, wait_until="domcontentloaded")
-            page.wait_for_timeout(1500)
+            if page.get_by_text(hint, exact=False).count() > 0:
+                return True
         except Exception:
             pass
+    return False
 
 
 class QrSession:
-    """A live headless login session held in the dashboard process."""
+    """Thread-safe live login session state (never holds the page object)."""
 
-    def __init__(self, session_id: str, alias: str, pw: Any, browser: Any, context: Any, page: Any, cookie_file: str):
+    def __init__(self, session_id: str, alias: str, cookie_file: str, png_path: str):
         self.session_id = session_id
         self.alias = alias
-        self.pw = pw
-        self.browser = browser
-        self.context = context
-        self.page = page
         self.cookie_file = cookie_file
+        self.png_path = png_path
         self.created_at = time.time()
-        self.status = "waiting"  # waiting -> scanning -> bound -> error/expired
+        self.status = "starting"  # starting -> waiting -> scanning -> bound -> error/expired
         self.error: str | None = None
-        self.qr_b64: str | None = None
-        self.lock = threading.Lock()
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+
+    def set_status(self, status: str, error: str | None = None) -> None:
+        with self._lock:
+            self.status = status
+            if error is not None:
+                self.error = error
+
+    def get_status(self):
+        with self._lock:
+            return self.status, self.error
+
+    def request_stop(self) -> None:
+        self._stop.set()
+
+    def should_stop(self) -> bool:
+        return self._stop.is_set()
 
 
 class QrLoginManager:
-    """In-memory registry of headless QR login sessions.
+    """In-memory registry of headless QR login sessions (single-thread driven)."""
 
-    Testable without a real browser: replace ``_launcher`` with a fake that
-    returns ``(pw, browser, context, page)`` stubs, and patch the module-level
-    ``_capture_qr`` / ``_is_logged_in`` helpers.
-    """
-
-    def __init__(self, sessions: dict[str, QrSession] | None = None, launcher: Callable[[str], Any] | None = None):
+    def __init__(
+        self,
+        sessions: dict[str, QrSession] | None = None,
+        launcher: Callable[[str], Any] | None = None,
+        run_in_thread: bool = True,
+    ):
         self._sessions: dict[str, QrSession] = sessions if sessions is not None else {}
         self._lock = threading.Lock()
         self._launcher: Callable[[str], Any] = launcher or _launch_qr_browser
+        self._run_in_thread = run_in_thread
 
     def start(self, alias: str, cookie_file: str) -> dict[str, Any]:
-        """Launch a headless QR session; return {session_id, qr_data_url, error}."""
+        """Begin a headless QR session; return {session_id, qr_image_url, error}."""
+        _ensure_dirs()
         session_id = uuid.uuid4().hex
-        try:
-            pw, browser, context, page = self._launcher(alias)
-        except Exception as e:  # e.g. Playwright not installed
-            return {"session_id": session_id, "qr_data_url": None, "error": f"无法启动浏览器: {e}"}
-
-        qr_bytes = _capture_qr(page)
-        if qr_bytes is None:
-            _safe_close(pw, browser)
-            return {
-                "session_id": session_id,
-                "qr_data_url": None,
-                "error": "未能捕获二维码（抖音可能启用了反爬校验，请改用 CLI: dy account add）",
-            }
-
-        session = QrSession(session_id, alias, pw, browser, context, page, cookie_file)
-        session.qr_b64 = base64.b64encode(qr_bytes).decode("ascii")
+        png_path = os.path.join(QR_IMAGES_ROOT, f"qr_{session_id}.png")
+        session = QrSession(session_id, alias, cookie_file, png_path)
         with self._lock:
             self._sessions[session_id] = session
-        return {"session_id": session_id, "qr_data_url": f"data:image/png;base64,{session.qr_b64}"}
+        if self._run_in_thread:
+            threading.Thread(target=self._run, args=(session,), daemon=True).start()
+        else:
+            self._run(session)  # tests drive synchronously
+        return {
+            "session_id": session_id,
+            "qr_image_url": f"/api/accounts/qr-image?session={session_id}",
+            "error": None,
+        }
 
-    def status(self, session_id: str) -> dict[str, Any]:
-        with self._lock:
-            session = self._sessions.get(session_id)
-        if session is None:
-            return {"status": "gone"}
+    def _run(self, session: QrSession) -> None:
+        try:
+            browser, context, page = self._launcher(session.alias)
+        except Exception as e:  # e.g. camoufox/firefox not installed
+            session.set_status("error", f"无法启动 Camoufox: {e}")
+            return
+        try:
+            # Capture the QR (retry briefly while it renders).
+            qr_ok = False
+            for _ in range(20):
+                if session.should_stop():
+                    return
+                if _capture_qr(page, session.png_path):
+                    qr_ok = True
+                    break
+                time.sleep(0.5)
+            if not qr_ok:
+                session.set_status(
+                    "error",
+                    "未能捕获二维码（抖音可能启用了反爬校验，请改用 CLI: dy account add）",
+                )
+                return
+            session.set_status("waiting")
 
-        with session.lock:
-            if session.status in ("bound", "error", "expired"):
-                return {"status": session.status, "error": session.error}
-
-            # TTL expiry.
-            if time.time() - session.created_at > SESSION_TTL_SECONDS:
-                session.status = "expired"
-                _safe_close(session.pw, session.browser)
-                with self._lock:
-                    self._sessions.pop(session_id, None)
-                return {"status": "expired"}
-
-            try:
-                if _is_logged_in(session.page):
-                    _collect_cookies(session.page)
+            while time.time() - session.created_at < SESSION_TTL_SECONDS:
+                if session.should_stop():
+                    return
+                if _is_logged_in(page, context):
+                    for url in [
+                        "https://www.douyin.com/",
+                        "https://creator.douyin.com/creator-micro/content/manage",
+                    ]:
+                        try:
+                            page.goto(url, wait_until="domcontentloaded")
+                            page.wait_for_timeout(1200)
+                        except Exception:
+                            pass
                     os.makedirs(os.path.dirname(session.cookie_file), exist_ok=True)
-                    session.context.storage_state(path=session.cookie_file)
+                    context.storage_state(path=session.cookie_file)
                     from ..account_bridge import register_or_update_account
 
                     register_or_update_account(
@@ -230,29 +257,56 @@ class QrLoginManager:
                         cookie_file=session.cookie_file,
                         login_status="ready",
                     )
-                    session.status = "bound"
-                    _safe_close(session.pw, session.browser)
-                    with self._lock:
-                        self._sessions.pop(session_id, None)
-                    return {"status": "bound"}
-                session.status = "scanning" if _is_qr_scanned(session.page) else "waiting"
-                return {"status": session.status}
-            except Exception as e:
-                session.status = "error"
-                session.error = str(e)
-                _safe_close(session.pw, session.browser)
+                    session.set_status("bound")
+                    return
+                session.set_status("scanning" if _is_qr_scanned(page) else "waiting")
+                time.sleep(2)
+            session.set_status("expired")
+        except Exception as e:
+            session.set_status("error", str(e))
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
+            try:
+                if os.path.isfile(session.png_path):
+                    os.remove(session.png_path)
+            except OSError:
+                pass
+            st, _ = session.get_status()
+            # Keep error/aborted sessions so the frontend can read the error;
+            # bound/expired sessions are done and can be dropped immediately.
+            if st in ("bound", "expired"):
                 with self._lock:
-                    self._sessions.pop(session_id, None)
-                return {"status": "error", "error": str(e)}
+                    self._sessions.pop(session.session_id, None)
+
+    def status(self, session_id: str) -> dict[str, Any]:
+        with self._lock:
+            session = self._sessions.get(session_id)
+        if session is None:
+            return {"status": "gone"}
+        st, err = session.get_status()
+        return {"status": st, "error": err}
+
+    def qr_image(self, session_id: str) -> str | None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        return session.png_path if os.path.isfile(session.png_path) else None
+
+    def cancel(self, session_id: str) -> None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+        if session is not None:
+            session.request_stop()
 
     def close(self, session_id: str) -> None:
-        with self._lock:
-            session = self._sessions.pop(session_id, None)
-        if session is not None:
-            _safe_close(session.pw, session.browser)
+        self.cancel(session_id)
 
     def sweep(self) -> int:
-        """Drop expired sessions; returns number removed."""
+        """Drop expired/abandoned sessions; returns number removed."""
         removed = 0
         with self._lock:
             expired = [
@@ -262,6 +316,6 @@ class QrLoginManager:
             ]
             for sid in expired:
                 s = self._sessions.pop(sid)
-                _safe_close(s.pw, s.browser)
+                s.request_stop()
                 removed += 1
         return removed

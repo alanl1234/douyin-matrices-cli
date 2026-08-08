@@ -3,7 +3,7 @@
 {% block content %}
 <h1>网页内扫码绑定</h1>
 <p class="hint">
-  后端会拉起一个无头浏览器打开抖音创作者登录页，把二维码抓出来显示在这里。
+  后端会拉起一个抗检测浏览器（Camoufox）打开抖音登录页，把二维码抓出来显示在这里。
   用<b>抖音 App</b> 扫码并在手机上确认即可完成绑定，无需在本机开浏览器。
 </p>
 
@@ -85,7 +85,7 @@
     }
 
     sessionId = data.session_id;
-    qrImg.src = data.qr_data_url;
+    qrImg.src = data.qr_image_url;
     qrImg.style.display = 'block';
     qrPlaceholder.style.display = 'none';
     setStatus('请使用抖音 App 扫码', 'ok');

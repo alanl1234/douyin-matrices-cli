@@ -7,19 +7,33 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">🎬 douyin-matrices</div>
-    <nav>
-      <a href="/">概览</a>
-      <a href="/accounts">账号矩阵</a>
-      <a href="/personas">人设库</a>
-      <a href="/publish">跨账号发布</a>
-      <a href="/engagement">互动治理</a>
-      <a href="/orchestrator">编排器</a>
-    </nav>
-  </header>
-  <main>
-    {% block content %}{% endblock %}
-  </main>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">🎬 douyin-matrices</div>
+      <nav>
+        <a href="/">概览</a>
+        <a href="/accounts">账号矩阵</a>
+        <a href="/personas">人设库</a>
+        <a href="/searches">爆款搜索</a>
+        <a href="/publish">跨账号发布</a>
+        <a href="/engagement">互动治理</a>
+        <a href="/orchestrator">编排器</a>
+        <a href="/analytics">数据分析</a>
+        <a href="/messages">消息</a>
+        <a href="/comments">评论</a>
+      </nav>
+    </aside>
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <script>
+    // 高亮当前导航项（对齐 xhs 的 active 态）
+    var cur = location.pathname;
+    document.querySelectorAll('.sidebar nav a').forEach(function (a) {
+      var href = a.getAttribute('href');
+      if (href === '/' ? cur === '/' : cur.indexOf(href) === 0) a.classList.add('active');
+    });
+  </script>
 </body>
 </html>

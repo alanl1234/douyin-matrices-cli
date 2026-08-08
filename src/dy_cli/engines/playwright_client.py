@@ -159,6 +159,123 @@ class PlaywrightClient:
         return False
 
     # ------------------------------------------------------------------
+    # Publish helpers (登录断言 / 可见范围 / 正文填充 / 结果判定)
+    # ------------------------------------------------------------------
+
+    async def _assert_logged_in(self, page) -> None:
+        """发布前断言登录态；若被重定向到登录页则抛错（#7 发布前真实校验）。"""
+        url = page.url
+        if "passport" in url or "login" in url:
+            raise PlaywrightError("Cookie 已失效，请重新登录: dy login")
+        for txt in ("扫码登录", "手机号登录", "账号登录"):
+            if await page.get_by_text(txt).count() > 0:
+                raise PlaywrightError("Cookie 已失效，请重新登录: dy login")
+
+    async def _set_visibility(self, page, visibility: str) -> None:
+        """设置可见范围：公开(默认) / 好友可见 / 仅自己可见（#2 三档全覆盖，去重）。"""
+        mapping = {
+            "公开": "公开",
+            "好友可见": "好友可见",
+            "仅自己可见": "仅自己可见",
+            "私密": "仅自己可见",
+        }
+        target = mapping.get((visibility or "公开").strip(), "公开")
+        if target == "公开":
+            return
+        try:
+            trigger = page.locator("text=谁可以看").first
+            if await trigger.count() == 0:
+                return
+            await trigger.click()
+            await page.wait_for_timeout(600)
+            opt = page.locator(f"text={target}").first
+            if await opt.count() > 0:
+                await opt.click()
+                await page.wait_for_timeout(400)
+        except Exception:
+            print(f"[dy] 可见范围设置失败（{visibility}），保持默认公开")
+
+    async def _fill_content(self, page, content: str, tags=None, mentions=None) -> None:
+        """填写正文，并可靠插入话题(#)与 @好友 chip（#3）。"""
+        editor = page.locator('[contenteditable="true"]').first
+        try:
+            await editor.wait_for(timeout=6000)
+        except Exception:
+            return
+        await editor.click()
+        if content:
+            await page.keyboard.type(content, delay=40)
+        for tag in (tags or []):
+            await page.keyboard.type(f"#{tag}", delay=40)
+            await self._commit_chip(page)
+        for m in (mentions or []):
+            await page.keyboard.type(f"@{m}", delay=40)
+            await self._commit_chip(page)
+
+    async def _commit_chip(self, page) -> None:
+        """话题/@ 输入后等待下拉建议，回车选中；无建议则空格分隔（#3 兜底）。"""
+        try:
+            await page.wait_for_timeout(700)
+            sugg = page.locator(
+                '[class*=suggest], [class*=mention], [class*=topic] li, [class*=user] li'
+            ).first
+            if await sugg.count() > 0:
+                await page.keyboard.press("Enter")
+            else:
+                await page.keyboard.press(" ")
+        except Exception:
+            try:
+                await page.keyboard.press(" ")
+            except Exception:
+                pass
+
+    async def _try_capture_work_url(self, page):
+        """尽力从页面抓取新发布作品的链接（best-effort）。"""
+        try:
+            return await page.evaluate("""() => {
+                const links = Array.from(document.querySelectorAll('a[href]'));
+                for (const a of links) {
+                    const h = a.href || '';
+                    if (/\\/(video|note|aweme)\\//.test(h) && !h.includes('creator')) return h;
+                }
+                return null;
+            }""")
+        except Exception:
+            return None
+
+    async def _wait_publish_result(self, page):
+        """点击发布后判定真实结果，返回 (status, url, message)（#1 真实成功判定）。"""
+        await page.wait_for_timeout(4000)
+        fail_kw = ["失败", "错误", "频繁", "审核", "请完善", "已存在", "违规", "不能", "无法", "不正确"]
+        success_kw = ["成功", "已发布", "提交成功"]
+        toast = await page.evaluate(
+            '()=>Array.from(document.querySelectorAll("[class*=toast]"))'
+            '.map(t=>t.textContent.trim()).filter(Boolean)'
+        )
+        toast_str = " ".join(toast) if toast else ""
+        if any(k in toast_str for k in fail_kw):
+            reason = next((t for t in toast if any(k in t for k in fail_kw)), toast_str)
+            return ("failed", None, reason)
+        if any(k in toast_str for k in success_kw):
+            return ("published", await self._try_capture_work_url(page), "成功")
+        if "manage" in page.url:
+            return ("published", await self._try_capture_work_url(page), "跳转作品管理页")
+        for _ in range(10):
+            await page.wait_for_timeout(2000)
+            if "manage" in page.url:
+                return ("published", await self._try_capture_work_url(page), "跳转作品管理页")
+            t2 = await page.evaluate(
+                '()=>Array.from(document.querySelectorAll("[class*=toast]"))'
+                '.map(t=>t.textContent.trim()).filter(Boolean)'
+            )
+            t2s = " ".join(t2) if t2 else ""
+            if any(k in t2s for k in success_kw):
+                return ("published", await self._try_capture_work_url(page), "成功")
+            if any(k in t2s for k in fail_kw):
+                return ("failed", None, " ".join(t2))
+        return ("submitted", None, "未检测到明确结果，请到创作者中心确认")
+
+    # ------------------------------------------------------------------
     # Publish video
     # ------------------------------------------------------------------
 
@@ -171,6 +288,7 @@ class PlaywrightClient:
         visibility: str = "公开",
         schedule_at: str | None = None,
         thumbnail_path: str | None = None,
+        mentions: list[str] | None = None,
     ) -> dict:
         """发布视频到抖音。"""
         if not os.path.isfile(video_path):
@@ -193,6 +311,7 @@ class PlaywrightClient:
         visibility: str,
         schedule_at: str | None,
         thumbnail_path: str | None,
+        mentions: list[str] | None,
     ) -> dict:
         from playwright.async_api import async_playwright
         async with async_playwright() as pw:
@@ -208,9 +327,8 @@ class PlaywrightClient:
                 await page.goto(self.UPLOAD_URL, wait_until="domcontentloaded")
                 await page.wait_for_timeout(3000)
 
-                # Check login
-                if await page.get_by_text("扫码登录").count() > 0:
-                    raise PlaywrightError("Cookie 已失效，请重新登录: dy login")
+                # Check login (发布前断言登录态)
+                await self._assert_logged_in(page)
 
                 # Upload video file
                 upload_input = page.locator('input[type="file"]').first
@@ -238,34 +356,11 @@ class PlaywrightClient:
                     # Try contenteditable
                     pass
 
-                # Fill description/content
-                content_editor = page.locator('[contenteditable="true"]').first
-                try:
-                    await content_editor.wait_for(timeout=5000)
-                    await content_editor.click()
+                # Fill description/content + 话题/@ (可靠插入 chip)
+                await self._fill_content(page, content, tags, mentions)
 
-                    # Type content
-                    full_text = content
-                    if tags:
-                        tag_text = " ".join(f"#{t}" for t in tags)
-                        full_text = f"{content} {tag_text}"
-
-                    await page.keyboard.type(full_text, delay=50)
-                except Exception:
-                    pass
-
-                # Handle visibility
-                if visibility == "私密" or visibility == "仅自己可见":
-                    try:
-                        perm_btn = page.locator('text=谁可以看').first
-                        if await perm_btn.count() > 0:
-                            await perm_btn.click()
-                            await page.wait_for_timeout(500)
-                            private_opt = page.locator('text=仅自己可见').first
-                            if await private_opt.count() > 0:
-                                await private_opt.click()
-                    except Exception:
-                        pass
+                # 可见范围留待封面上传后统一设置
+                # (实际设置见下方 _set_visibility 调用)
 
                 # Handle schedule
                 if schedule_at:
@@ -287,18 +382,12 @@ class PlaywrightClient:
                 # Handle cover (required by Douyin)
                 await self._select_cover(page)
 
-                # Handle visibility
-                if visibility == "私密" or visibility == "仅自己可见":
-                    try:
-                        private_opt = page.locator('text=仅自己可见').first
-                        if await private_opt.count() > 0:
-                            await private_opt.click(force=True)
-                    except Exception:
-                        pass
+                # 设置可见范围 (覆盖 公开/好友可见/仅自己可见)
+                await self._set_visibility(page, visibility)
 
                 # Click the EXACT "发布" button (not "高清发布")
                 await page.wait_for_timeout(2000)
-                published = await page.evaluate("""() => {
+                clicked = await page.evaluate("""() => {
                     const btns = document.querySelectorAll('button');
                     for (const b of btns) {
                         if (b.textContent.trim() === '发布' && !b.disabled) {
@@ -309,32 +398,18 @@ class PlaywrightClient:
                     return false;
                 }""")
 
-                if published:
-                    await page.wait_for_timeout(5000)
-                    # Check for error toast
-                    toast = await page.evaluate(
-                        '()=>Array.from(document.querySelectorAll("[class*=toast]"))'
-                        '.map(t=>t.textContent.trim()).filter(Boolean)'
-                    )
-                    if toast and "封面" in str(toast):
-                        print("[dy] 封面设置失败，请手动设置封面后发布")
-                    elif toast and "成功" in str(toast):
-                        print("[dy] 发布成功!")
-                    else:
-                        # Wait for navigation to manage page
-                        for _ in range(15):
-                            await page.wait_for_timeout(2000)
-                            if "manage" in page.url:
-                                print("[dy] 发布成功!")
-                                break
-                        else:
-                            print("[dy] 发布请求已提交")
-                else:
+                if not clicked:
                     print("[dy] 未找到发布按钮，内容已填写，请手动确认")
                     if not self.headless:
                         await page.wait_for_timeout(30000)
+                    return {"status": "submitted", "title": title,
+                            "message": "未找到发布按钮，请手动确认"}
 
-                return {"status": "published", "title": title}
+                status, url, message = await self._wait_publish_result(page)
+                print(f"[dy] 发布结果: {status} - {message}")
+                if url:
+                    print(f"[dy] 作品链接: {url}")
+                return {"status": status, "title": title, "url": url, "message": message}
 
             finally:
                 await context.storage_state(path=self.cookie_file)
@@ -402,6 +477,7 @@ class PlaywrightClient:
         tags: list[str] | None = None,
         visibility: str = "公开",
         schedule_at: str | None = None,
+        mentions: list[str] | None = None,
     ) -> dict:
         """发布图文到抖音。"""
         for img in images:
@@ -422,6 +498,7 @@ class PlaywrightClient:
         tags: list[str] | None,
         visibility: str,
         schedule_at: str | None,
+        mentions: list[str] | None,
     ) -> dict:
         from playwright.async_api import async_playwright
         async with async_playwright() as pw:
@@ -437,9 +514,8 @@ class PlaywrightClient:
                 await page.goto(self.UPLOAD_URL, wait_until="domcontentloaded")
                 await page.wait_for_timeout(3000)
 
-                # Check login
-                if await page.get_by_text("扫码登录").count() > 0:
-                    raise PlaywrightError("Cookie 已失效，请重新登录: dy login")
+                # Check login (发布前断言登录态)
+                await self._assert_logged_in(page)
 
                 # Switch to image tab if present
                 try:
@@ -474,29 +550,11 @@ class PlaywrightClient:
                 except Exception:
                     pass
 
-                # Fill content
-                content_editor = page.locator('[contenteditable="true"]').first
-                try:
-                    await content_editor.wait_for(timeout=5000)
-                    await content_editor.click()
+                # Fill content + 话题/@ (可靠插入 chip)
+                await self._fill_content(page, content, tags, mentions)
 
-                    full_text = content
-                    if tags:
-                        tag_text = " ".join(f"#{t}" for t in tags)
-                        full_text = f"{content} {tag_text}"
-
-                    await page.keyboard.type(full_text, delay=50)
-                except Exception:
-                    pass
-
-                # Handle visibility
-                if visibility == "私密" or visibility == "仅自己可见":
-                    try:
-                        private_opt = page.locator('text=仅自己可见').first
-                        if await private_opt.count() > 0:
-                            await private_opt.click(force=True)
-                    except Exception:
-                        pass
+                # 设置可见范围
+                await self._set_visibility(page, visibility)
 
                 # Handle schedule
                 if schedule_at:
@@ -504,7 +562,7 @@ class PlaywrightClient:
 
                 # Click the EXACT "发布" button (not "高清发布")
                 await page.wait_for_timeout(2000)
-                published = await page.evaluate("""() => {
+                clicked = await page.evaluate("""() => {
                     const btns = document.querySelectorAll('button');
                     for (const b of btns) {
                         if (b.textContent.trim() === '发布' && !b.disabled) {
@@ -515,15 +573,18 @@ class PlaywrightClient:
                     return false;
                 }""")
 
-                if published:
-                    await page.wait_for_timeout(5000)
-                    print("[dy] 发布请求已提交")
-                else:
+                if not clicked:
                     print("[dy] 未找到发布按钮，内容已填写，请手动确认")
                     if not self.headless:
                         await page.wait_for_timeout(30000)
+                    return {"status": "submitted", "title": title,
+                            "message": "未找到发布按钮，请手动确认"}
 
-                return {"status": "published", "title": title}
+                status, url, message = await self._wait_publish_result(page)
+                print(f"[dy] 发布结果: {status} - {message}")
+                if url:
+                    print(f"[dy] 作品链接: {url}")
+                return {"status": status, "title": title, "url": url, "message": message}
 
             finally:
                 await context.storage_state(path=self.cookie_file)

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}消息 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>消息通知</h1>
+<p class="hint">基于已就绪账号的创作者消息中心（首次加载会启动浏览器抓取）。</p>
+
+<div class="toolbar">
+  <button id="refresh" class="primary" type="button">刷新</button>
+  <span id="status" class="muted"></span>
+</div>
+
+<table id="tbl">
+  <thead><tr><th>类型</th><th>用户</th><th>内容</th><th>时间</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<script>
+  async function load() {
+    const statusEl = document.getElementById('status');
+    statusEl.textContent = '抓取中…';
+    try {
+      const resp = await fetch('/api/messages');
+      const j = await resp.json();
+      if (!j.ok) { statusEl.textContent = '失败: ' + (j.error || ''); return; }
+      const items = (j.data && j.data.mentions) || [];
+      const rows = document.getElementById('rows');
+      rows.innerHTML = items.map(function (m) {
+        return '<tr><td>' + (m.type || '-') + '</td><td>' + (m.user || '-') +
+          '</td><td>' + (m.content || '-') + '</td><td>' + (m.time || '-') + '</td></tr>';
+      }).join('') || '<tr><td colspan="4" class="empty">暂无消息</td></tr>';
+      statusEl.textContent = '共 ' + items.length + ' 条';
+    } catch (e) {
+      statusEl.textContent = '错误: ' + e;
+    }
+  }
+  document.getElementById('refresh').addEventListener('click', load);
+  load();
+</script>
+{% endblock %}

@@ -20,6 +20,7 @@ from dy_cli.utils.output import console, error, info, success
 @click.option("--video", "-v", default=None, help="视频文件路径")
 @click.option("--images", "-i", multiple=True, help="图片路径 (可多个)")
 @click.option("--tags", multiple=True, help="标签 (可多个，如: --tags 旅行 --tags 美食)")
+@click.option("--mention", "-m", multiple=True, help="@好友 (可多个，如: --mention 抖音小助手)")
 @click.option("--visibility", type=click.Choice(["公开", "好友可见", "仅自己可见"]),
               default="公开", help="可见范围")
 @click.option("--schedule", default=None, help="定时发布 (ISO 8601, 如 2026-03-16T10:00:00+08:00)")
@@ -28,7 +29,7 @@ from dy_cli.utils.output import console, error, info, success
 @click.option("--headless", is_flag=True, help="无头模式 (不显示浏览器)")
 @click.option("--dry-run", is_flag=True, help="预览模式，不实际发布")
 @click.pass_context
-def publish(ctx, title, content, content_file, video, images, tags, visibility, schedule, thumbnail, account, headless, dry_run):
+def publish(ctx, title, content, content_file, video, images, tags, mention, visibility, schedule, thumbnail, account, headless, dry_run):
     """发布视频或图文。"""
     account = account or effective_account(ctx)
 
@@ -60,6 +61,7 @@ def publish(ctx, title, content, content_file, video, images, tags, visibility, 
             raise SystemExit(1)
 
     tags = list(tags)
+    mentions = list(mention)
 
     # Dry run
     if dry_run:
@@ -73,6 +75,8 @@ def publish(ctx, title, content, content_file, video, images, tags, visibility, 
             console.print(f"  [bold]图片:[/] {', '.join(images)}")
         if tags:
             console.print(f"  [bold]标签:[/] {', '.join(tags)}")
+        if mentions:
+            console.print(f"  [bold]@好友:[/] {', '.join(mentions)}")
         console.print(f"  [bold]可见:[/] {visibility}")
         if schedule:
             console.print(f"  [bold]定时:[/] {schedule}")
@@ -98,7 +102,7 @@ def publish(ctx, title, content, content_file, video, images, tags, visibility, 
     try:
         if video:
             info(f"正在发布视频: {os.path.basename(video)}")
-            client.publish_video(
+            result = client.publish_video(
                 title=title,
                 content=content,
                 video_path=os.path.abspath(video),
@@ -106,20 +110,30 @@ def publish(ctx, title, content, content_file, video, images, tags, visibility, 
                 visibility=visibility,
                 schedule_at=schedule,
                 thumbnail_path=thumbnail,
+                mentions=mentions or None,
             )
         else:
             info(f"正在发布图文 ({len(images)} 张图片)")
-            client.publish_image_text(
+            result = client.publish_image_text(
                 title=title,
                 content=content,
                 images=[os.path.abspath(img) if not img.startswith("http") else img for img in images],
                 tags=tags or None,
                 visibility=visibility,
                 schedule_at=schedule,
+                mentions=mentions or None,
             )
 
-        success("发布成功! 🎉")
-        info("提示: 可用 [bold]dy search[/] 搜索验证发布状态")
+        status = result.get("status", "submitted")
+        if status == "published":
+            success("发布成功! 🎉")
+            if result.get("url"):
+                info(f"作品链接: {result['url']}")
+        elif status == "failed":
+            error(f"发布失败: {result.get('message', '未知原因')}")
+            raise SystemExit(1)
+        else:
+            info("发布请求已提交，但未检测到明确结果，请到创作者中心确认")
 
     except PlaywrightError as e:
         error(f"发布失败: {e}")
