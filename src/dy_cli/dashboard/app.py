@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -204,19 +205,59 @@ def create_app() -> FastAPI:
     @app.post("/api/publish")
     async def api_publish(request: Request):
         data = await request.form()
+        topics = [t.strip() for t in str(data.get("topics") or "").split(",") if t.strip()]
+        mentions = [m.strip() for m in str(data.get("mentions") or "").split(",") if m.strip()]
+        schedule_at = str(data.get("schedule_at") or "").strip() or None
+        # 真上传：multipart 文件落 uploads_dir；同时兼容旧 textarea 本地路径
+        media_paths: list[str] = []
+        for item in data.getlist("files"):
+            if hasattr(item, "filename") and getattr(item, "filename", ""):
+                raw = await item.read()
+                if not raw:
+                    continue
+                safe = Path(str(item.filename)).name
+                safe = "".join(ch for ch in safe if ch.isalnum() or ch in "._-")
+                dest = cfg.uploads_dir / f"{int(time.time() * 1000)}_{safe}"
+                dest.write_bytes(raw)
+                media_paths.append(str(dest))
+            elif isinstance(item, str) and item.strip():
+                media_paths.append(item.strip())
+        for p in str(data.get("media_paths") or "").splitlines():
+            if p.strip():
+                media_paths.append(p.strip())
         spec = {
             "title": str(data.get("title", "")),
             "body": str(data.get("body", "")),
             "media_type": str(data.get("media_type", "video")),
-            "topics": [t.strip() for t in str(data.get("topics") or "").split(",") if t.strip()],
-            "media_paths": [p.strip() for p in str(data.get("media_paths") or "").splitlines() if p.strip()],
+            "topics": topics,
+            "mentions": mentions,
+            "visibility": str(data.get("visibility", "公开")) or "公开",
+            "schedule_at": schedule_at,
+            "media_paths": media_paths,
         }
         group = data.get("group") or None
         account_ids = None
-        if data.get("account_ids"):
-            account_ids = [int(x) for x in str(data["account_ids"]).split(",") if x.strip()]
+        sel = data.getlist("account_ids")
+        if sel:
+            account_ids = [int(x) for x in sel if str(x).strip()]
         created = orch.batch_publish(spec, account_ids=account_ids, group=group)
         return JSONResponse({"ok": True, "created_task_ids": created})
+
+    @app.post("/api/publish/{task_id}/approve")
+    def api_publish_approve(task_id: int):
+        # 网页端「批准 / 立即发布」：直接执行（不受编排开关影响），回写作品链接
+        result = orch.run_publish_task(task_id)
+        task = db.get_publish_task(task_id)
+        resp: dict[str, Any] = {"ok": bool(result.get("ok")), "result": result}
+        if task:
+            resp["status"] = task["status"]
+            resp["url"] = task.get("result_url") or ""
+        return JSONResponse(resp)
+
+    @app.get("/api/publish-tasks")
+    def api_publish_tasks():
+        tasks = db.list_publish_tasks()[:50]
+        return JSONResponse({"ok": True, "tasks": tasks})
 
     @app.get("/orchestrator", response_class=HTMLResponse)
     def orchestrator_page():

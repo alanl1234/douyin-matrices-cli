@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS publish_tasks (
  topics_json TEXT NOT NULL DEFAULT '[]',
  media_type TEXT NOT NULL DEFAULT 'video',
  media_paths_json TEXT NOT NULL DEFAULT '[]',
+ visibility TEXT NOT NULL DEFAULT '公开',
+ schedule_at TEXT NOT NULL DEFAULT '',
+ mentions_json TEXT NOT NULL DEFAULT '[]',
+ result_url TEXT NOT NULL DEFAULT '',
  status TEXT NOT NULL DEFAULT 'pending_review',
  attempts INTEGER NOT NULL DEFAULT 0,
  content_fingerprint TEXT,
@@ -135,6 +139,11 @@ class Database:
             self._ensure_column(con, "accounts", "last_publish_at", "TEXT")
             self._ensure_column(con, "accounts", "last_error", "TEXT")
             self._ensure_column(con, "search_jobs", "updated_at", "TEXT")
+            # 阶段 B：发布任务透传可见范围 / 定时 / @好友 + 作品链接回显
+            self._ensure_column(con, "publish_tasks", "visibility", "TEXT")
+            self._ensure_column(con, "publish_tasks", "schedule_at", "TEXT")
+            self._ensure_column(con, "publish_tasks", "mentions_json", "TEXT")
+            self._ensure_column(con, "publish_tasks", "result_url", "TEXT")
 
     def _ensure_column(self, con: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
         rows = con.execute(f"PRAGMA table_info({table})").fetchall()
@@ -306,12 +315,17 @@ class Database:
         media_type: str = "video",
         media_paths: list[str] | None = None,
         content_fingerprint: str | None = None,
+        visibility: str = "公开",
+        schedule_at: str | None = None,
+        mentions: list[str] | None = None,
+        result_url: str = "",
     ) -> int:
         now = now_iso()
         return self.execute(
             "INSERT INTO publish_tasks(account_id,title,body,topics_json,media_type,"
-            "media_paths_json,content_fingerprint,created_at,updated_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
+            "media_paths_json,content_fingerprint,visibility,schedule_at,mentions_json,result_url,"
+            "created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 account_id,
                 title,
@@ -320,6 +334,10 @@ class Database:
                 media_type,
                 json_dumps(media_paths or []),
                 content_fingerprint or "",
+                visibility,
+                schedule_at or "",
+                json_dumps(mentions or []),
+                result_url,
                 now,
                 now,
             ),

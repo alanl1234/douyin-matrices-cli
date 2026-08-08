@@ -46,18 +46,27 @@ def test_batch_publish_respects_group(setup):
 def test_run_publish_success_records_history(setup, monkeypatch):
     _, db, orch = setup
     aid = db.create_account(alias="a1", cookie_file="a1.json")
-    tid = db.create_publish_task(aid, "标题", "正文内容")
+    tid = orch.create_publish_task(
+        aid, "标题", "正文内容",
+        visibility="好友可见", schedule_at="2026-08-10T12:00", mentions=["抖音小助手"],
+    )
 
-    calls = []
+    captured = {}
     def fake_publish(alias, **kw):
-        calls.append(alias)
-        return {"success": True}
+        captured.update(kw)
+        return {"status": "published", "url": "https://v.douyin.com/abc", "message": "ok"}
     monkeypatch.setattr(publisher_mod, "publish_for_account", fake_publish)
 
     res = orch.run_publish_task(tid)
     assert res["ok"] is True
+    assert res["url"] == "https://v.douyin.com/abc"
+    # 阶段 B：可见范围 / 定时 / @好友 必须透传到 publisher
+    assert captured["visibility"] == "好友可见"
+    assert captured["schedule"] == "2026-08-10T12:00"
+    assert captured["mentions"] == ["抖音小助手"]
     task = db.get_publish_task(tid)
     assert task["status"] == "published"
+    assert task["result_url"] == "https://v.douyin.com/abc"
     # dedup history recorded for this account
     assert orch._recent(aid) == ["正文内容"]
 
@@ -85,7 +94,7 @@ def test_run_publish_dedup_blocks_duplicate(setup, monkeypatch):
     aid = db.create_account(alias="a1", cookie_file="a1.json")
 
     def fake_publish(alias, **kw):
-        return {"success": True}
+        return {"status": "published", "url": "https://v.douyin.com/x", "message": "ok"}
     monkeypatch.setattr(publisher_mod, "publish_for_account", fake_publish)
 
     t1 = db.create_publish_task(aid, "标题", "同一段推广文案")

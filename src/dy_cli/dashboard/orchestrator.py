@@ -106,10 +106,15 @@ class Orchestrator:
         topics: list[str] | None = None,
         media_type: str = "video",
         media_paths: list[str] | None = None,
+        visibility: str = "公开",
+        schedule_at: str | None = None,
+        mentions: list[str] | None = None,
     ) -> int:
         fingerprint = str(abs(hash(body)))
         return self.db.create_publish_task(
-            account_id, title, body, topics, media_type, media_paths, content_fingerprint=fingerprint
+            account_id, title, body, topics, media_type, media_paths,
+            content_fingerprint=fingerprint, visibility=visibility,
+            schedule_at=schedule_at, mentions=mentions,
         )
 
     def run_publish_task(self, task_id: int) -> dict[str, Any]:
@@ -135,18 +140,39 @@ class Orchestrator:
             from . import publisher
 
             media_paths = json_loads(task["media_paths_json"], [])
-            publisher.publish_for_account(
+            result = publisher.publish_for_account(
                 alias,
                 title=task["title"],
                 body=task["body"],
                 media_type=task["media_type"],
                 media_paths=media_paths,
                 tags=json_loads(task["topics_json"], []),
+                visibility=task.get("visibility") or "公开",
+                schedule=task.get("schedule_at") or None,
+                mentions=json_loads(task.get("mentions_json") or "[]", []),
             )
-            self.db.update("publish_tasks", task_id, status="published", attempts=task["attempts"] + 1)
-            self.db.update("accounts", int(account["id"]), last_publish_at=now_iso())
-            self._record(int(task["account_id"]), task["body"])
-            return {"ok": True, "account": alias}
+            status = result.get("status")
+            url = result.get("url") or ""
+            msg = result.get("message") or ""
+            if status == "published":
+                self.db.update(
+                    "publish_tasks", task_id, status="published", attempts=task["attempts"] + 1, result_url=url
+                )
+                self.db.update("accounts", int(account["id"]), last_publish_at=now_iso())
+                self._record(int(task["account_id"]), task["body"])
+                return {"ok": True, "account": alias, "url": url}
+            if status == "submitted":
+                # 已提交但服务端未确认（需人工核验），不计入当日发布数
+                self.db.update(
+                    "publish_tasks", task_id, status="submitted", attempts=task["attempts"] + 1, result_url=url
+                )
+                return {"ok": True, "account": alias, "status": "submitted", "url": url}
+            self.db.update(
+                "publish_tasks", task_id, status="failed", error=(msg or str(result))[:500],
+                attempts=task["attempts"] + 1,
+            )
+            self.db.update("accounts", int(account["id"]), last_error=(msg or str(result))[:500])
+            return {"ok": False, "reason": "execute_failed", "error": (msg or str(result))[:500]}
         except Exception as e:  # 单任务失败不阻断其余账号
             self.db.update(
                 "publish_tasks", task_id, status="failed", error=str(e)[:500], attempts=task["attempts"] + 1
@@ -203,6 +229,9 @@ class Orchestrator:
                 spec.get("topics"),
                 spec.get("media_type", "video"),
                 spec.get("media_paths"),
+                visibility=spec.get("visibility", "公开"),
+                schedule_at=spec.get("schedule_at"),
+                mentions=spec.get("mentions"),
             )
             created.append(tid)
             if self.enabled:

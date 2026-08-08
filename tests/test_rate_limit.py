@@ -1,6 +1,8 @@
 """Tests for the per-account rate limiter + persistent store."""
 from __future__ import annotations
 
+import datetime
+
 from pathlib import Path
 
 from dy_cli.dashboard.persistence import P0Store
@@ -25,8 +27,17 @@ def test_daily_limit(tmp_path):
     store = _store(tmp_path)
     store.acquire_request(1, interval_seconds=0.0, daily_limit=1)
     wait = store.acquire_request(1, interval_seconds=0.0, daily_limit=1)
-    # after hitting the daily cap, must wait until next midnight (large value)
-    assert wait > 3600
+    # after hitting the daily cap, must wait until next midnight (a positive,
+    # sub-day value regardless of the current time of day)
+    expected = (
+        datetime.datetime.combine(
+            datetime.date.today() + datetime.timedelta(days=1), datetime.time.min
+        )
+        - datetime.datetime.now()
+    ).total_seconds()
+    assert wait > 0
+    assert wait <= 86400
+    assert abs(wait - expected) < 5
 
 
 def test_pause_blocks(tmp_path):

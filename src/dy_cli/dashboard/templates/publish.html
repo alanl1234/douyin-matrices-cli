@@ -7,8 +7,8 @@
   <h2>向矩阵账号批量投递内容</h2>
   <p class="hint">
     为选中的启用账号各建一个发布任务，交由<b>治理引擎</b>把关（PII / 高风险 / 相似度去重）
-    与<b>统一限流</b>后执行。若已在环境变量中开启 <code>DY_ORCHESTRATOR=1</code>，任务会立即执行；
-    否则进入 <span class="badge dim">待审</span> 等待编排线程按 <code>DY_AUTO_PUBLISH</code> 处理。
+    与<b>统一限流</b>后执行。默认进入 <span class="badge dim">待审</span>，
+    在下方任务列表点击 <b>批准 / 立即发布</b> 即可执行（无需开启编排常驻线程）。
   </p>
   <form id="publish-form" onsubmit="return submitPublish(event)">
     <p><input name="title" placeholder="标题（必填）" required style="min-width:420px"></p>
@@ -18,9 +18,24 @@
         <option value="video">视频</option>
         <option value="image">图文</option>
       </select>
-      <input name="topics" placeholder="话题，逗号分隔，如：旅行,vlog" style="min-width:320px">
+      <input type="file" name="files" multiple accept="video/*,image/*">
     </p>
-    <p><textarea name="media_paths" placeholder="媒体文件路径，每行一个（本地绝对路径）"></textarea></p>
+    <p>
+      <input name="topics" placeholder="话题，逗号分隔，如：旅行,vlog" style="min-width:280px">
+      <input name="mentions" placeholder="@好友，逗号分隔，如：抖音小助手" style="min-width:280px">
+    </p>
+    <p>
+      <label>可见范围：
+        <select name="visibility">
+          <option value="公开">公开</option>
+          <option value="好友可见">好友可见</option>
+          <option value="仅自己可见">仅自己可见</option>
+        </select>
+      </label>
+      <label style="margin-left:16px">定时发布：
+        <input type="datetime-local" name="schedule_at">
+      </label>
+    </p>
     <p>
       <label>分组（可选，按分组筛选目标账号）：
         <input name="group" placeholder="如：美妆组" style="min-width:200px"></label>
@@ -39,25 +54,12 @@
 </div>
 
 <div class="panel">
-  <h2>可用的启用账号</h2>
-  {% if accounts %}
-  <table>
-    <thead><tr><th>ID</th><th>别名</th><th>分组</th><th>人设</th><th>最近发布</th></tr></thead>
-    <tbody>
-    {% for a in accounts %}
-      <tr>
-        <td>{{ a.id }}</td>
-        <td><b>{{ a.alias }}</b></td>
-        <td>{{ a.group_name or '—' }}</td>
-        <td>{{ a.persona_id or '—' }}</td>
-        <td>{{ a.last_publish_at or '—' }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <div class="empty">没有启用的账号。先去 <a href="/accounts">账号矩阵</a> 添加并启用账号。</div>
-  {% endif %}
+  <h2>发布任务（待审 / 结果）
+    <button id="refresh" class="button mini" onclick="loadTasks()">刷新</button>
+  </h2>
+  <div id="tasks-wrap">
+    <div class="empty">加载中…</div>
+  </div>
 </div>
 
 <script>
@@ -65,25 +67,80 @@ async function submitPublish(e) {
   e.preventDefault();
   const form = e.target;
   const fd = new FormData(form);
-  const accountIds = Array.from(form.account_ids.selectedOptions).map(o => o.value);
-  const payload = new URLSearchParams();
-  payload.set("title", fd.get("title") || "");
-  payload.set("body", fd.get("body") || "");
-  payload.set("media_type", fd.get("media_type") || "video");
-  payload.set("topics", fd.get("topics") || "");
-  payload.set("media_paths", fd.get("media_paths") || "");
-  payload.set("group", fd.get("group") || "");
-  if (accountIds.length) payload.set("account_ids", accountIds.join(","));
-  const res = await fetch("/api/publish", { method: "POST", body: payload });
+  const res = await fetch("/api/publish", { method: "POST", body: fd });
   const json = await res.json();
   const msg = document.getElementById("msg");
   if (json.ok) {
     msg.textContent = "已创建任务：" + (json.created_task_ids || []).join(", ");
     form.reset();
+    loadTasks();
   } else {
     msg.textContent = "失败：" + JSON.stringify(json);
   }
   return false;
 }
+
+const STATUS_BADGE = {
+  pending_review: "badge dim",
+  queued: "badge",
+  running: "badge",
+  published: "badge ok",
+  submitted: "badge warn",
+  failed: "badge err",
+  blocked: "badge err",
+  manual: "badge warn",
+};
+
+async function loadTasks() {
+  const wrap = document.getElementById("tasks-wrap");
+  try {
+    const res = await fetch("/api/publish-tasks");
+    const json = await res.json();
+    const tasks = (json.tasks || []).slice(0, 30);
+    if (!tasks.length) {
+      wrap.innerHTML = '<div class="empty">还没有发布任务。先在上方创建。</div>';
+      return;
+    }
+    let html = '<table><thead><tr><th>ID</th><th>账号</th><th>标题</th><th>类型</th><th>可见</th><th>定时</th><th>状态</th><th>结果</th><th>操作</th></tr></thead><tbody>';
+    for (const t of tasks) {
+      const cls = STATUS_BADGE[t.status] || "badge";
+      const canApprove = (t.status === "pending_review" || t.status === "failed" || t.status === "submitted");
+      const link = t.result_url
+        ? `<a href="${t.result_url}" target="_blank" rel="noopener">查看作品</a>`
+        : (t.error ? `<span class="muted">${escapeHtml(t.error)}</span>` : "—");
+      html += `<tr>
+        <td>${t.id}</td>
+        <td>${t.account_id}</td>
+        <td>${escapeHtml(t.title || "")}</td>
+        <td>${t.media_type}</td>
+        <td>${t.visibility || "公开"}</td>
+        <td>${t.schedule_at ? escapeHtml(t.schedule_at) : "—"}</td>
+        <td><span class="${cls}">${t.status}</span></td>
+        <td>${link}</td>
+        <td>${canApprove ? `<button class="button mini primary" onclick="approve(${t.id})">批准/立即发布</button>` : ""}</td>
+      </tr>`;
+    }
+    html += "</tbody></table>";
+    wrap.innerHTML = html;
+  } catch (err) {
+    wrap.innerHTML = '<div class="empty">加载失败：' + err + "</div>";
+  }
+}
+
+async function approve(taskId) {
+  const btn = event.target;
+  btn.disabled = true;
+  const res = await fetch("/api/publish/" + taskId + "/approve", { method: "POST" });
+  const json = await res.json();
+  alert((json.ok ? "已执行：" : "失败：") + JSON.stringify(json.result || json));
+  loadTasks();
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+loadTasks();
+setInterval(loadTasks, 8000);
 </script>
 {% endblock %}
