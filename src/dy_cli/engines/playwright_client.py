@@ -43,7 +43,6 @@ class PlaywrightClient:
 
     CREATOR_URL = "https://creator.douyin.com"
     UPLOAD_URL = "https://creator.douyin.com/creator-micro/content/upload"
-    PUBLISH_IMAGE_URL = "https://creator.douyin.com/creator-micro/content/publish/image"
     ANALYTICS_URL = "https://creator.douyin.com/creator-micro/data/stats/self-content"
     DOUYIN_URL = "https://www.douyin.com"
 

@@ -31,7 +31,6 @@ douyin/
 │       ├── config.py, output.py, signature.py
 ├── scripts/
 │   ├── douyin_login.py
-│   ├── douyin_publisher.py
 │   ├── douyin_analytics.py
 │   └── chrome_launcher.py
 └── config/
