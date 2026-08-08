@@ -103,3 +103,22 @@ button.secondary { background: #eef2f7; color: var(--ink); }
 .hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
 code { background: #f1f3f5; padding: 1px 6px; border-radius: 6px; font-size: 12px; }
 .empty { color: var(--muted); padding: 20px; text-align: center; }
+
+.muted { color: var(--muted); font-size: 13px; }
+.toolbar { margin-bottom: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* Button-styled link (no native button available for navigation) */
+.button { display: inline-block; text-decoration: none; font-size: 14px; cursor: pointer;
+  border: none; border-radius: 8px; padding: 8px 14px; background: var(--brand); color: #fff; }
+.button.primary { background: var(--brand); }
+.button:hover { opacity: .92; }
+
+button.primary { background: var(--brand); color: #fff; }
+.mini { font: inherit; cursor: pointer; text-decoration: none; border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 9px; background: #eef2f7; color: var(--ink); font-size: 12px; }
+.mini:hover { background: var(--brand-soft); color: var(--brand); border-color: var(--brand); }
+.mini.danger { background: #fee2e2; color: var(--bad); border-color: #fecaca; }
+
+.field { display: block; margin: 12px 0; text-align: left; }
+.field input { margin-top: 4px; }
+

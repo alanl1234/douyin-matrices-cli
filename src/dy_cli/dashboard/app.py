@@ -17,8 +17,9 @@ from .config import DashboardConfig
 from .db import Database
 from .orchestrator import Orchestrator
 from .utils import json_dumps, json_loads, split_terms
+from .qr_login import QrLoginManager
 
-from ..account_bridge import verify_account_cookies
+from ..account_bridge import legacy_cookie_file, verify_account_cookies
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -41,6 +42,9 @@ def create_app() -> FastAPI:
     orch = Orchestrator(db, cfg)
     orch.start()  # 无操作，除非 DY_ORCHESTRATOR=1
     orch.install(app)
+    # 网页内扫码绑定：无头浏览器会话管理器（不在导入时启动浏览器）
+    qr_manager = QrLoginManager()
+    app.state.qr_manager = qr_manager
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -99,6 +103,47 @@ def create_app() -> FastAPI:
             # 标记待重新绑定：下次 `dy login --account <alias>` 会重新拉起浏览器登录
             db.set_login_status(account_id, "unbound")
         return RedirectResponse("/accounts", status_code=303)
+
+    # ── 网页内扫码绑定（无头二维码）────────────────────────────────────────────
+    @app.get("/bind-qr", response_class=HTMLResponse)
+    def bind_qr_new():
+        return _render("bind_qr.html", account=None)
+
+    @app.get("/accounts/{account_id}/bind-qr", response_class=HTMLResponse)
+    def bind_qr_existing(account_id: int):
+        acc = db.get_account(account_id)
+        if not acc:
+            return RedirectResponse("/accounts", status_code=303)
+        return _render("bind_qr.html", account=acc)
+
+    @app.post("/api/accounts/qr-start")
+    def api_qr_start(account_id: int | None = Form(None), alias: str = Form("")):
+        # 确定别名：优先用表单，其次用已有账号行的别名
+        if not alias and account_id:
+            acc = db.get_account(account_id)
+            if acc:
+                alias = acc["alias"]
+        if not alias:
+            return JSONResponse({"ok": False, "error": "缺少账号别名"}, status_code=400)
+        # 解析/创建账号行的 cookie 路径
+        acc = db.get_account_by_alias(alias)
+        cookie_file = (acc or {}).get("cookie_file") or legacy_cookie_file(alias)
+        result = app.state.qr_manager.start(alias, cookie_file)
+        if result.get("error"):
+            return JSONResponse({"ok": False, "error": result["error"]})
+        return JSONResponse(
+            {
+                "ok": True,
+                "session_id": result["session_id"],
+                "qr_data_url": result["qr_data_url"],
+            }
+        )
+
+    @app.get("/api/accounts/qr-status")
+    def api_qr_status(session: str = ""):
+        if not session:
+            return JSONResponse({"status": "gone"})
+        return JSONResponse(app.state.qr_manager.status(session))
 
     @app.get("/api/accounts")
     def api_accounts():

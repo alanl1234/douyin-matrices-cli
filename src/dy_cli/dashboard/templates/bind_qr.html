@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}扫码绑定 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>网页内扫码绑定</h1>
+<p class="hint">
+  后端会拉起一个无头浏览器打开抖音创作者登录页，把二维码抓出来显示在这里。
+  用<b>抖音 App</b> 扫码并在手机上确认即可完成绑定，无需在本机开浏览器。
+</p>
+
+<div class="panel" style="max-width: 460px; margin: 0 auto; text-align: center;">
+  {% if account %}
+    <p>为账号 <b>{{ account.alias }}</b> 绑定 / 重新绑定登录态</p>
+    <input type="hidden" id="account_id" value="{{ account.id }}">
+  {% else %}
+    <label class="field">账号别名
+      <input id="alias" type="text" placeholder="例如 mother_slowly" size="20">
+    </label>
+    <p class="muted">新别名会自动在矩阵中登记；已有别名会更新登录态。</p>
+  {% endif %}
+
+  <div id="qr-box" style="margin: 18px 0;">
+    <div id="qr-placeholder" class="empty">点击「开始扫码」生成二维码</div>
+    <img id="qr-img" src="" alt="登录二维码" style="display:none; width: 260px; height: 260px; border: 1px solid #ddd; border-radius: 8px;">
+  </div>
+
+  <div id="status" class="badge dim">待开始</div>
+
+  <div style="margin-top: 16px;">
+    <button id="start-btn" class="primary" type="button">开始扫码</button>
+    <button id="retry-btn" class="secondary" type="button" style="display:none;">重新生成</button>
+  </div>
+
+  <p class="muted" id="tip">提示：抖音二维码有效期约 2 分钟。若长时间无反应，可能是抖音反爬拦截，可改用 CLI <code>dy account add &lt;别名&gt;</code>。</p>
+</div>
+
+<script>
+  const accountId = document.getElementById('account_id')?.value || '';
+  const aliasInput = document.getElementById('alias');
+  const qrImg = document.getElementById('qr-img');
+  const qrPlaceholder = document.getElementById('qr-placeholder');
+  const statusEl = document.getElementById('status');
+  const startBtn = document.getElementById('start-btn');
+  const retryBtn = document.getElementById('retry-btn');
+  let sessionId = '';
+  let pollTimer = null;
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = 'badge ' + (cls || 'dim');
+  }
+
+  async function startQr() {
+    const alias = (aliasInput ? aliasInput.value.trim() : '') || '';
+    if (!alias && !accountId) {
+      setStatus('请先填写账号别名', 'warn');
+      return;
+    }
+    startBtn.disabled = true;
+    setStatus('正在生成二维码…', 'dim');
+    qrImg.style.display = 'none';
+    qrPlaceholder.style.display = 'block';
+    qrPlaceholder.textContent = '正在拉起无头浏览器…';
+    retryBtn.style.display = 'none';
+
+    const body = new URLSearchParams();
+    if (accountId) body.set('account_id', accountId);
+    if (alias) body.set('alias', alias);
+
+    let data;
+    try {
+      const resp = await fetch('/api/accounts/qr-start', { method: 'POST', body });
+      data = await resp.json();
+    } catch (e) {
+      setStatus('请求失败: ' + e, 'warn');
+      startBtn.disabled = false;
+      return;
+    }
+
+    if (!data.ok) {
+      setStatus('失败: ' + (data.error || '未知错误'), 'warn');
+      qrPlaceholder.textContent = data.error || '生成失败';
+      startBtn.disabled = false;
+      retryBtn.style.display = 'inline-block';
+      return;
+    }
+
+    sessionId = data.session_id;
+    qrImg.src = data.qr_data_url;
+    qrImg.style.display = 'block';
+    qrPlaceholder.style.display = 'none';
+    setStatus('请使用抖音 App 扫码', 'ok');
+    startBtn.style.display = 'none';
+    poll();
+  }
+
+  async function poll() {
+    if (pollTimer) clearTimeout(pollTimer);
+    try {
+      const resp = await fetch('/api/accounts/qr-status?session=' + encodeURIComponent(sessionId));
+      const data = await resp.json();
+      if (data.status === 'bound') {
+        setStatus('绑定成功 ✓', 'ok');
+        setTimeout(() => { window.location.href = '/accounts'; }, 1500);
+        return;
+      } else if (data.status === 'scanning') {
+        setStatus('已扫描，请在手机上确认', 'ok');
+      } else if (data.status === 'waiting') {
+        setStatus('等待扫码…', 'dim');
+      } else if (data.status === 'expired') {
+        setStatus('二维码已过期，请重新生成', 'warn');
+        retryBtn.style.display = 'inline-block';
+        return;
+      } else if (data.status === 'error') {
+        setStatus('错误: ' + (data.error || ''), 'warn');
+        retryBtn.style.display = 'inline-block';
+        return;
+      } else if (data.status === 'gone') {
+        setStatus('会话已失效，请重新生成', 'warn');
+        retryBtn.style.display = 'inline-block';
+        return;
+      }
+    } catch (e) {
+      setStatus('轮询失败: ' + e, 'warn');
+    }
+    pollTimer = setTimeout(poll, 2500);
+  }
+
+  function reset() {
+    sessionId = '';
+    if (pollTimer) clearTimeout(pollTimer);
+    qrImg.style.display = 'none';
+    qrPlaceholder.style.display = 'block';
+    qrPlaceholder.textContent = '点击「开始扫码」生成二维码';
+    startBtn.style.display = 'inline-block';
+    startBtn.disabled = false;
+    retryBtn.style.display = 'none';
+    setStatus('待开始', 'dim');
+  }
+
+  startBtn.addEventListener('click', startQr);
+  retryBtn.addEventListener('click', reset);
+</script>
+{% endblock %}

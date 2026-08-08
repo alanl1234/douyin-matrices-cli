@@ -2,9 +2,13 @@
 {% block title %}账号矩阵 · douyin-matrices{% endblock %}
 {% block content %}
 <h1>账号矩阵</h1>
-<p class="hint">通过 CLI <code>dy account add &lt;名称&gt;</code> 添加账号会在此登记。也可用 <code>dy account import-legacy</code> 导入旧 cookie。</p>
+<p class="hint">通过 CLI <code>dy account add &lt;名称&gt;</code> 添加账号会在此登记。也可用 <code>dy account import-legacy</code> 导入旧 cookie。或用下方「添加账号（扫码）」在网页内直接扫码绑定。</p>
 
 <div class="panel">
+  <div class="toolbar">
+    <a class="button primary" href="/bind-qr">＋ 添加账号（扫码）</a>
+  </div>
+
   {% if accounts %}
   <table>
     <thead><tr><th>ID</th><th>别名</th><th>抖音号</th><th>昵称</th><th>人设</th><th>分组</th><th>状态</th><th>启用</th><th>设置</th><th>操作</th></tr></thead>
@@ -39,6 +43,7 @@
         </td>
         <td><button class="secondary" type="submit">保存</button></form></td>
         <td class="actions">
+          <a class="mini" href="/accounts/{{ a.id }}/bind-qr">扫码</a>
           <form class="inline" method="post" action="/accounts/{{ a.id }}/verify"><button class="mini" type="submit">校验</button></form>
           <form class="inline" method="post" action="/accounts/{{ a.id }}/bind"><button class="mini" type="submit">重绑</button></form>
           <form class="inline" method="post" action="/accounts/{{ a.id }}/toggle"><button class="mini" type="submit">{% if a.enabled %}停用{% else %}启用{% endif %}</button></form>

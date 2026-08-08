@@ -136,6 +136,22 @@ douyin-matrices supports multiple authentication methods:
 Use `--browser` to specify extraction explicitly, or `dy login` for the QR flow.
 Other authenticated commands automatically retry once with fresh browser cookies when the saved session has expired.
 
+### Web QR binding (dashboard)
+
+You can bind / re-bind an account **from the web dashboard** without opening a local
+browser: the dashboard backend launches a *headless* Playwright browser, captures the
+Douyin creator login QR, and serves it to the page. Scan it with the Douyin App and
+confirm on your phone — the backend detects login, persists `storage_state` to the
+account's cookie file, and registers the account in the matrix DB.
+
+- Open **账号矩阵 → ＋ 添加账号（扫码）** to create a new account, or the **扫码** button
+  next to an existing account to re-bind it.
+- Endpoint flow: `POST /api/accounts/qr-start` → `GET /api/accounts/qr-status?session=…`
+  (poll every few seconds; QR expires after ~2 minutes).
+- If Douyin serves an anti-bot challenge instead of a QR, fall back to the CLI:
+  `dy account add <alias>`.
+
+
 ### Multi-account: `--account`
 
 If you run the local dashboard (`dy-dashboard`, at http://127.0.0.1:8765),
@@ -303,6 +319,7 @@ dy_cli/
     ├── persistence.py   # P0Store (rate-limit + durable task queue)
     ├── queue.py         # DurableTaskQueue supervisor
     ├── rate_limit.py    # Per-account rate limiter
+    ├── qr_login.py      # Headless QR-code login sessions (网页内扫码绑定)
     ├── governance.py    # PII / opt-out / similarity dedup
     ├── engagement.py    # Engagement grayscale governance
     ├── collector.py     # Douyin material collector (resumable)
