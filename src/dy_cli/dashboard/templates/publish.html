@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}跨账号发布 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>跨账号发布</h1>
+
+<div class="panel">
+  <h2>向矩阵账号批量投递内容</h2>
+  <p class="hint">
+    为选中的启用账号各建一个发布任务，交由<b>治理引擎</b>把关（PII / 高风险 / 相似度去重）
+    与<b>统一限流</b>后执行。若已在环境变量中开启 <code>DY_ORCHESTRATOR=1</code>，任务会立即执行；
+    否则进入 <span class="badge dim">待审</span> 等待编排线程按 <code>DY_AUTO_PUBLISH</code> 处理。
+  </p>
+  <form id="publish-form" onsubmit="return submitPublish(event)">
+    <p><input name="title" placeholder="标题（必填）" required style="min-width:420px"></p>
+    <p><textarea name="body" placeholder="正文内容（将经过治理引擎检测）"></textarea></p>
+    <p>
+      <select name="media_type">
+        <option value="video">视频</option>
+        <option value="image">图文</option>
+      </select>
+      <input name="topics" placeholder="话题，逗号分隔，如：旅行,vlog" style="min-width:320px">
+    </p>
+    <p><textarea name="media_paths" placeholder="媒体文件路径，每行一个（本地绝对路径）"></textarea></p>
+    <p>
+      <label>分组（可选，按分组筛选目标账号）：
+        <input name="group" placeholder="如：美妆组" style="min-width:200px"></label>
+    </p>
+    <p>
+      <label>目标账号（可多选；留空=全部启用账号）：
+        <select name="account_ids" multiple size="6" style="min-width:280px">
+          {% for a in accounts %}
+          <option value="{{ a.id }}">{{ a.alias }}{% if a.group_name %}（{{ a.group_name }}）{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </p>
+    <p><button type="submit">创建并投递</button> <span id="msg" class="hint"></span></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>可用的启用账号</h2>
+  {% if accounts %}
+  <table>
+    <thead><tr><th>ID</th><th>别名</th><th>分组</th><th>人设</th><th>最近发布</th></tr></thead>
+    <tbody>
+    {% for a in accounts %}
+      <tr>
+        <td>{{ a.id }}</td>
+        <td><b>{{ a.alias }}</b></td>
+        <td>{{ a.group_name or '—' }}</td>
+        <td>{{ a.persona_id or '—' }}</td>
+        <td>{{ a.last_publish_at or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">没有启用的账号。先去 <a href="/accounts">账号矩阵</a> 添加并启用账号。</div>
+  {% endif %}
+</div>
+
+<script>
+async function submitPublish(e) {
+  e.preventDefault();
+  const form = e.target;
+  const fd = new FormData(form);
+  const accountIds = Array.from(form.account_ids.selectedOptions).map(o => o.value);
+  const payload = new URLSearchParams();
+  payload.set("title", fd.get("title") || "");
+  payload.set("body", fd.get("body") || "");
+  payload.set("media_type", fd.get("media_type") || "video");
+  payload.set("topics", fd.get("topics") || "");
+  payload.set("media_paths", fd.get("media_paths") || "");
+  payload.set("group", fd.get("group") || "");
+  if (accountIds.length) payload.set("account_ids", accountIds.join(","));
+  const res = await fetch("/api/publish", { method: "POST", body: payload });
+  const json = await res.json();
+  const msg = document.getElementById("msg");
+  if (json.ok) {
+    msg.textContent = "已创建任务：" + (json.created_task_ids || []).join(", ");
+    form.reset();
+  } else {
+    msg.textContent = "失败：" + JSON.stringify(json);
+  }
+  return false;
+}
+</script>
+{% endblock %}

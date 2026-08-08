@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}编排器 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>编排器</h1>
+
+<div class="cards">
+  <div class="card">
+    <div class="num">{% if orch_enabled %}ON{% else %}OFF{% endif %}</div>
+    <div class="label">编排器状态 (DY_ORCHESTRATOR)</div>
+  </div>
+  <div class="card"><div class="num">{{ mode }}</div><div class="label">互动模式 (DY_ENGAGEMENT_MODE)</div></div>
+  <div class="card"><div class="num">{{ daily_limit }}</div><div class="label">每日自动发布上限 (DY_DAILY_PUBLISH_LIMIT)</div></div>
+</div>
+
+<div class="panel">
+  <h2>说明</h2>
+  <p class="hint">
+    编排器是<b>受治理的跨账号编排层</b>，默认完全关闭（opt-in）。它在不改动任何现有手动流程的前提下，
+    补上"跨账号批量发布 / 批量互动"能力，并一律经由治理引擎把关、统一限流、全程问责。
+  </p>
+  <table>
+    <thead><tr><th>环境变量</th><th>作用</th><th>当前</th></tr></thead>
+    <tbody>
+      <tr><td><code>DY_ORCHESTRATOR=1</code></td><td>启动编排常驻线程</td><td>{% if orch_enabled %}<span class="badge ok">已开启</span>{% else %}<span class="badge dim">关闭</span>{% endif %}</td></tr>
+      <tr><td><code>DY_AUTO_PUBLISH=1|approve</code></td><td>自动执行待审(pending_review)发布任务</td><td>{{ mode_auto }}</td></tr>
+      <tr><td><code>DY_ENGAGEMENT_MODE</code></td><td>互动灰度：shadow / inbound / reviewed</td><td>{{ mode }}</td></tr>
+      <tr><td><code>DY_DAILY_PUBLISH_LIMIT</code></td><td>每账号每日最多自动发布数</td><td>{{ daily_limit }}</td></tr>
+      <tr><td><code>DY_ORCHESTRATOR_TICK</code></td><td>编排线程轮询间隔（秒）</td><td>{{ tick_seconds }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>实时状态</h2>
+  <p>
+    <button id="refresh" class="secondary">刷新状态</button>
+    <button id="trigger">手动触发一轮</button>
+    <span id="status-msg" class="hint"></span>
+  </p>
+  <pre id="status-json" class="hint">点击"刷新状态"加载…</pre>
+</div>
+
+<script>
+async function refresh() {
+  const res = await fetch("/api/orchestrator/status");
+  const json = await res.json();
+  document.getElementById("status-json").textContent = JSON.stringify(json, null, 2);
+  return json;
+}
+async function trigger() {
+  const msg = document.getElementById("status-msg");
+  const res = await fetch("/api/orchestrator/trigger", { method: "POST" });
+  const json = await res.json();
+  msg.textContent = json.ok ? "已触发一轮编排" : ("失败：" + JSON.stringify(json));
+  await refresh();
+}
+document.getElementById("refresh").onclick = refresh;
+document.getElementById("trigger").onclick = trigger;
+</script>
+{% endblock %}

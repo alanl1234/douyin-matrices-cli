@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}互动治理 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>互动治理</h1>
+<p class="hint">互动灰度由环境变量 <code>DY_ENGAGEMENT_MODE</code> 控制，默认 <code>shadow</code>（只生成/审核草稿，绝不发送）。</p>
+
+<div class="panel">
+  <h2>当前模式</h2>
+  {% if mode == 'shadow' %}<span class="badge dim">shadow · 仅草稿</span>
+  {% elif mode == 'inbound' %}<span class="badge ok">inbound · 仅入站</span>
+  {% elif mode == 'reviewed' %}<span class="badge warn">reviewed · 全部放开</span>
+  {% else %}<span class="badge warn">{{ mode }}</span>{% endif %}
+  <p class="muted">shadow：只记录不发送；inbound：仅自有评论回复 + 入站私信；reviewed：全部放开（仍受预算/暖线索约束）。</p>
+</div>
+
+<div class="panel">
+  <h2>预算规则</h2>
+  <table>
+    <thead><tr><th>项目</th><th>值</th></tr></thead>
+    <tbody>
+      {% for k, v in rule.items() %}
+      <tr><td>{{ k }}</td><td>{{ v }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>停止名单（opt-out / 手动屏蔽）</h2>
+  {% if blocked %}
+  <table>
+    <thead><tr><th>用户</th><th>原因</th><th>最近触达</th></tr></thead>
+    <tbody>
+    {% for b in blocked %}
+      <tr><td>{{ b.external_user_id }}</td><td>{{ b.block_reason or '—' }}</td><td>{{ b.last_contact_at or '—' }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">暂无被屏蔽的用户。</div>
+  {% endif %}
+</div>
+{% endblock %}

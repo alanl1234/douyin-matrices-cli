@@ -1,0 +1,11 @@
+{
+  "name": "douyin",
+  "version": "0.1.0",
+  "description": "抖音全能 Skill：Playwright 发布/登录 + API 搜索/下载/互动/热榜/直播",
+  "author": "Ben",
+  "keywords": ["douyin", "dy", "tiktok", "抖音", "publish", "download", "analytics", "trending"],
+  "engines": {
+    "python": ">=3.10",
+    "playwright": ">=1.40"
+  }
+}

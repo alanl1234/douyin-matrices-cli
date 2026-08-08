@@ -1,0 +1,6 @@
+httpx>=0.27.0
+playwright>=1.40
+click>=8.0
+rich>=13.0
+browser-cookie3>=0.19
+PyYAML>=6.0

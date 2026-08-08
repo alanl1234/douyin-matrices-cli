@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}账号矩阵 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>账号矩阵</h1>
+<p class="hint">通过 CLI <code>dy account add &lt;名称&gt;</code> 添加账号会在此登记。也可用 <code>dy account import-legacy</code> 导入旧 cookie。</p>
+
+<div class="panel">
+  {% if accounts %}
+  <table>
+    <thead><tr><th>ID</th><th>别名</th><th>抖音号</th><th>昵称</th><th>人设</th><th>分组</th><th>状态</th><th>启用</th><th>设置</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for a in accounts %}
+      {% set pid = a.persona_id|int if a.persona_id else 0 %}
+      {% set healthy = a.login_status in ('ready','legacy') and a.enabled %}
+      <tr>
+        <td>{{ a.id }}</td>
+        <td><b>{{ a.alias }}</b></td>
+        <td>{{ a.douyin_user_id or '—' }}</td>
+        <td>{{ a.nickname or '—' }}</td>
+        <td>
+          <form class="inline" method="post" action="/accounts/{{ a.id }}/update">
+            <select name="persona_id">
+              <option value="0">—</option>
+              {% for p in personas %}
+                <option value="{{ p.id }}" {% if p.id == pid %}selected{% endif %}>{{ p.name }}</option>
+              {% endfor %}
+            </select>
+        </td>
+        <td><input name="group" value="{{ a.group_name or '' }}" size="8" placeholder="分组"></td>
+        <td>
+          {% if a.login_status == 'ready' %}<span class="badge ok">就绪</span>
+          {% elif a.login_status == 'legacy' %}<span class="badge dim">旧</span>
+          {% elif a.login_status == 'unbound' %}<span class="badge warn">待绑定</span>
+          {% else %}<span class="badge warn">{{ a.login_status }}</span>{% endif %}
+          {% if a.last_verified_at %}<small class="muted">· 校验 {{ a.last_verified_at[:10] }}</small>{% endif %}
+        </td>
+        <td>
+          <input type="checkbox" name="enabled" value="1" {% if a.enabled %}checked{% endif %}>
+        </td>
+        <td><button class="secondary" type="submit">保存</button></form></td>
+        <td class="actions">
+          <form class="inline" method="post" action="/accounts/{{ a.id }}/verify"><button class="mini" type="submit">校验</button></form>
+          <form class="inline" method="post" action="/accounts/{{ a.id }}/bind"><button class="mini" type="submit">重绑</button></form>
+          <form class="inline" method="post" action="/accounts/{{ a.id }}/toggle"><button class="mini" type="submit">{% if a.enabled %}停用{% else %}启用{% endif %}</button></form>
+          <form class="inline" method="post" action="/accounts/{{ a.id }}/delete" onsubmit="return confirm('确认删除该账号？');"><button class="mini danger" type="submit">删除</button></form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">暂无账号。运行 <code>dy account add &lt;名称&gt;</code> 开始。</div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}爆款采集 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>爆款采集</h1>
+<p class="hint">按关键词/话题搜索抖音视频笔记并写入本地素材库。采集在持久队列中执行，进程重启可断点恢复。</p>
+
+<div class="panel">
+  <h2>新建采集任务</h2>
+  <form method="post" action="/searches">
+    <label>任务名 <input name="name" required placeholder="如：美妆爆款"></label>
+    <label>关键词（逗号分隔） <input name="keywords" placeholder="口红,护肤"></label>
+    <label>话题（逗号分隔） <input name="topics" placeholder="好物推荐"></label>
+    <label>媒体类型
+      <select name="media_type"><option value="all">全部</option><option value="video">视频</option></select>
+    </label>
+    <label>最大页数 <input name="max_pages" type="number" value="3" min="1" max="10"></label>
+    <label>最小点赞 <input name="min_likes" type="number" value="0" min="0"></label>
+    <button class="primary" type="submit">创建</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>采集任务</h2>
+  {% if jobs %}
+  <table>
+    <thead><tr><th>ID</th><th>名称</th><th>关键词</th><th>状态</th><th>结果数</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr>
+        <td>{{ j.id }}</td>
+        <td>{{ j.name }}</td>
+        <td>{{ j.keywords_json }}</td>
+        <td>
+          {% if j.status == 'complete' %}<span class="badge ok">完成</span>
+          {% elif j.status == 'running' %}<span class="badge dim">进行中</span>
+          {% elif j.status == 'failed' %}<span class="badge warn">失败</span>
+          {% else %}<span class="badge dim">{{ j.status }}</span>{% endif %}
+        </td>
+        <td>{{ j.result_count }}</td>
+        <td class="actions">
+          <form class="inline" method="post" action="/searches/{{ j.id }}/run">
+            <button class="mini" type="submit">运行</button></form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">暂无采集任务。</div>
+  {% endif %}
+</div>
+{% endblock %}

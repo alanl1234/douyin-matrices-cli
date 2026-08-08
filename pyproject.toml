@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "douyin-matrices"
+version = "0.1.0"
+description = "Douyin account-matrix CLI + local dashboard — multi-account personas, governed cross-account orchestration, unified rate limiting, dedup and accountability governance (aligned with xiaohongshu-matrices-cli)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "alanl1234" }]
+keywords = ["douyin", "dy", "tiktok", "抖音", "cli", "矩阵", "matrix", "多账号", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "click>=8.0",
+    "rich>=13.0",
+    "httpx>=0.27.0",
+    "playwright>=1.40",
+    "browser-cookie3>=0.19",
+    "PyYAML>=6.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+dy = "dy_cli.main:cli"
+dy-dashboard = "dy_cli.dashboard.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/alanl1234/douyin-matrices-cli"
+Repository = "https://github.com/alanl1234/douyin-matrices-cli"
+Issues = "https://github.com/alanl1234/douyin-matrices-cli/issues"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E402", "E501"]  # E402: imports after click group; E501: long lines in UA/JS strings
+
+[tool.ruff.lint.per-file-ignores]
+"src/dy_cli/commands/init.py" = ["F401"]  # playwright import for availability check
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dy_cli = ["**/*.html", "**/*.css", "**/*.js"]

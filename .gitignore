@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project
+cookies/
+*.cookie
+~/.dy/
+downloads/
+*.mp4
+*.mp3
+
+# Playwright
+.playwright/
+
+# Logs
+*.log
+
+# Config (user-specific)
+config/accounts.json
+dist/
+
+# Local test / matrix data (not part of the repo)
+.pytest_cache/
+.pytest_tmp/
+.douyin-matrices/

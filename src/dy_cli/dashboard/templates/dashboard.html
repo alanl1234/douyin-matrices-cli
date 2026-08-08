@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}概览 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>概览</h1>
+
+<div class="cards">
+  <div class="card"><div class="num">{{ accounts|length }}</div><div class="label">矩阵账号</div></div>
+  <div class="card"><div class="num">{{ personas|length }}</div><div class="label">人设</div></div>
+  <div class="card"><div class="num">{{ tasks|length }}</div><div class="label">发布任务</div></div>
+  <div class="card"><div class="num">{% if orch_enabled %}ON{% else %}OFF{% endif %}</div><div class="label">编排器</div></div>
+</div>
+
+<div class="panel">
+  <h2>最近发布任务</h2>
+  {% if tasks %}
+  <table>
+    <thead><tr><th>ID</th><th>账号</th><th>标题</th><th>状态</th><th>尝试</th></tr></thead>
+    <tbody>
+    {% for t in tasks %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td>{{ t.account_id }}</td>
+        <td>{{ t.title }}</td>
+        <td>
+          {% if t.status == 'published' %}<span class="badge ok">已发布</span>
+          {% elif t.status == 'blocked' %}<span class="badge bad">已拦截</span>
+          {% elif t.status == 'failed' %}<span class="badge bad">失败</span>
+          {% elif t.status == 'pending_review' %}<span class="badge warn">待审</span>
+          {% else %}<span class="badge dim">{{ t.status }}</span>{% endif %}
+        </td>
+        <td>{{ t.attempts }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">暂无发布任务。去 <a href="/publish">跨账号发布</a> 创建。</div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>快速开始</h2>
+  <p class="hint">
+    • 添加账号：<code>dy account add &lt;名称&gt;</code>（扫码登录并登记进矩阵）<br>
+    • 创建人设：<code>dy account persona create &lt;名称&gt; --topics 旅行,美食</code><br>
+    • 指定账号操作：<code>dy --account &lt;别名&gt; publish -t 标题 -v 视频.mp4</code><br>
+    • 启动后台：<code>dy-dashboard</code> → 本页
+  </p>
+</div>
+{% endblock %}

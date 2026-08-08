@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}人设库 · douyin-matrices{% endblock %}
+{% block content %}
+<h1>人设库</h1>
+
+<div class="panel">
+  <h2>创建人设</h2>
+  <form method="post" action="/personas/create">
+    <p><input name="name" placeholder="人设名称（必填）" required style="min-width:220px"></p>
+    <p><input name="tone" placeholder="语气风格，如：活泼、专业" style="min-width:320px"></p>
+    <p><textarea name="bio" placeholder="简介模板"></textarea></p>
+    <p><input name="topics" placeholder="擅长话题，逗号分隔，如：旅行,美食,数码" style="min-width:360px"></p>
+    <p><input name="forbidden" placeholder="禁词，逗号分隔" style="min-width:360px"></p>
+    <p><button type="submit">创建人设</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>已有的人设</h2>
+  {% if personas %}
+  <table>
+    <thead><tr><th>ID</th><th>名称</th><th>语气</th><th>擅长话题</th><th>禁词</th></tr></thead>
+    <tbody>
+    {% for p in personas %}
+      <tr>
+        <td>{{ p.id }}</td>
+        <td><b>{{ p.name }}</b></td>
+        <td>{{ p.tone or '—' }}</td>
+        <td>{{ (p.topics_json|tojson) if p.topics_json else '—' }}</td>
+        <td>{{ (p.forbidden_words_json|tojson) if p.forbidden_words_json else '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">尚未创建人设。</div>
+  {% endif %}
+</div>
+{% endblock %}

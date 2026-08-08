@@ -1,0 +1,9 @@
+{
+  "accounts": {
+    "default": {
+      "alias": "主账号",
+      "cookie_file": "~/.dy/cookies/default.json"
+    }
+  },
+  "default_account": "default"
+}
