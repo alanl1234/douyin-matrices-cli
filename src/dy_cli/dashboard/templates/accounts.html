@@ -3,11 +3,14 @@
 {% block content %}
 <h1>账号矩阵</h1>
 {% if msg %}<div class="banner">{{ msg }}</div>{% endif %}
-<p class="hint">通过 CLI <code>dy account add &lt;名称&gt;</code> 添加账号会在此登记。也可用 <code>dy account import-legacy</code> 导入旧 cookie。账号行上的「扫码绑定」会<strong>弹出可见浏览器窗口</strong>供扫码（对标 xiaohongshu）；无显示器/无头服务器环境弹窗失败时，改用「扫码」走网页无头二维码（保底）。</p>
+<p class="hint">通过 CLI <code>dy account add &lt;名称&gt;</code> 添加账号会在此登记。也可用 <code>dy account import-legacy</code> 导入旧 cookie。账号行上的「扫码绑定」会<strong>弹出可见浏览器窗口</strong>供扫码（对标 xiaohongshu）。无显示器/无头服务器环境弹不出窗口时，请改用 CLI：<code>dy account add &lt;别名&gt;</code>。</p>
 
 <div class="panel">
   <div class="toolbar">
-    <a class="button primary" href="/bind-qr">＋ 添加账号（扫码）</a>
+    <form class="inline" method="post" action="/accounts/create">
+      <input name="alias" placeholder="新账号别名" size="14" required>
+      <button class="button primary" type="submit">＋ 添加账号并扫码</button>
+    </form>
   </div>
 
   {% if accounts %}
@@ -44,7 +47,6 @@
         </td>
         <td><button class="secondary" type="submit">保存</button></form></td>
         <td class="actions">
-          <a class="mini" href="/accounts/{{ a.id }}/bind-qr" title="网页无头二维码（保底）">扫码</a>
           <form class="inline" method="post" action="/accounts/{{ a.id }}/verify"><button class="mini" type="submit">校验</button></form>
           <form class="inline" method="post" action="/accounts/{{ a.id }}/bind"><button class="mini" type="submit" title="弹出可见浏览器窗口扫码">扫码绑定</button></form>
           <form class="inline" method="post" action="/accounts/{{ a.id }}/toggle"><button class="mini" type="submit">{% if a.enabled %}停用{% else %}启用{% endif %}</button></form>

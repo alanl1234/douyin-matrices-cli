@@ -150,7 +150,7 @@ dy account toggle primary            # Enable / disable this account
 
 > **Login & task model (CLI-first)**
 > - **Preferred: CLI visible-browser scan** — `dy login` / `dy account add <alias>` opens a real Chromium window for you to scan with the Douyin App. Most authentic, most anti-bot friendly. Cookies land in `~/.dy/cookies/<alias>.json`.
-> - **Fallback: web dashboard headless QR** — `dy-dashboard` → *账号矩阵 → ＋ 添加账号（扫码）* launches a *headless* Chromium that renders the login QR to the page (mirrors xiaohongshu's `/qr-bind` headless mode). Scan + confirm on your phone; cookies are persisted the same way. Fall back to the CLI when headless is challenged or the environment misbehaves.
+> - **Web binding pops a visible browser** — `dy-dashboard` → *账号矩阵 → ＋ 添加账号并扫码* (or *扫码绑定* on an existing account row) launches a real Chromium window for you to scan with the Douyin App (mirrors xiaohongshu's visible-browser `/accounts/{id}/bind`). On headless servers where no window can appear, use the CLI: `dy account add <alias>`.
 > - **All tasks default to the CLI** — publish, interact, analytics, comments, search, download, trending, live are all `dy` subcommands. The web dashboard is a management view only; it does not replace CLI execution.
 
 douyin-matrices supports multiple authentication methods:
@@ -163,24 +163,24 @@ douyin-matrices supports multiple authentication methods:
 Use `--browser` to specify extraction explicitly, or `dy login` for the QR flow.
 Other authenticated commands automatically retry once with fresh browser cookies when the saved session has expired.
 
-### Web QR binding (dashboard) — *fallback* login
+### Web visible-browser binding (dashboard)
 
-This is the **fallback** login path. The recommended primary path is the CLI visible-browser scan
-(`dy login` / `dy account add <alias>`), which is more robust against anti-bot checks. Use the web
-QR only when you cannot run a local browser, or to re-bind an account from the management page.
+Binding from the web dashboard **pops a real Chromium window** for you to scan with the
+Douyin App — the same engine as the CLI (`dy login` / `dy account add <alias>`), and as
+robust against anti-bot checks as a normal user login. This mirrors xiaohongshu's
+`POST /accounts/{id}/bind` visible-browser flow.
 
-You can bind / re-bind an account **from the web dashboard** without opening a local
-browser: the dashboard backend launches a *headless* Playwright browser, captures the
-Douyin creator login QR, and serves it to the page. Scan it with the Douyin App and
-confirm on your phone — the backend detects login, persists `storage_state` to the
-account's cookie file, and registers the account in the matrix DB.
+You can add / re-bind an account **from the web dashboard**:
 
-- Open **账号矩阵 → ＋ 添加账号（扫码）** to create a new account, or the **扫码** button
-  next to an existing account to re-bind it.
-- Endpoint flow: `POST /api/accounts/qr-start` → `GET /api/accounts/qr-status?session=…`
-  (poll every few seconds; QR expires after ~2 minutes).
-- If Douyin serves an anti-bot challenge instead of a QR, fall back to the CLI:
-  `dy account add <alias>`.
+- **＋ 添加账号并扫码** creates a new account row and immediately pops a Chromium window to scan.
+- The **扫码绑定** button next to an existing account row re-binds it by popping a Chromium window.
+
+After scanning and confirming on your phone, the backend detects the login cookie, persists
+`storage_state` to the account's cookie file, and registers the account in the matrix DB. The
+accounts page polls the bind status and flips the badge to **就绪** automatically.
+
+> ⚠️ A visible window requires a display. On a headless server (no GUI), the pop-up will fail —
+> in that case use the CLI instead: `dy account add <alias>`.
 
 
 ### Multi-account: `--account`
@@ -350,7 +350,6 @@ dy_cli/
     ├── persistence.py   # P0Store (rate-limit + durable task queue)
     ├── queue.py         # DurableTaskQueue supervisor
     ├── rate_limit.py    # Per-account rate limiter
-    ├── qr_login.py      # Headless QR-code login sessions (网页内扫码绑定)
     ├── governance.py    # PII / opt-out / similarity dedup
     ├── engagement.py    # Engagement grayscale governance
     ├── collector.py     # Douyin material collector (resumable)
@@ -490,7 +489,7 @@ dy account toggle primary            # 启用 / 停用该账号
 
 > **登录与任务模型（CLI 优先）**
 > - **首选：CLI 可见浏览器扫码** —— `dy login` / `dy account add <alias>` 打开真实 Chromium 窗口，用抖音 App 扫码，真实性最强、风控最友好。Cookie 落 `~/.dy/cookies/<alias>.json`。
-> - **保底：网页后台无头二维码** —— `dy-dashboard` 的「账号矩阵 → ＋ 添加账号（扫码）」启动 headless Chromium 把登录二维码渲染到页面（对标 xiaohongshu 项目的 `/qr-bind` headless 模式），扫码确认后同样落盘 Cookie。无头被风控或环境异常时回退到 CLI。
+> - **网页后台弹可见浏览器绑定** —— `dy-dashboard` 的「账号矩阵 → ＋ 添加账号并扫码」或账号行「扫码绑定」会弹出真实 Chromium 窗口，用抖音 App 扫码（对标 xiaohongshu 项目的可见浏览器 `/accounts/{id}/bind`）。无显示器/无头服务器弹不出窗口时，回退到 CLI：`dy account add <别名>`。
 > - **所有任务默认走 CLI** —— 发布、互动、数据、评论、搜索、下载、热榜、直播等均为 `dy` 子命令；网页后台仅作管理视图，不替代 CLI 执行。
 
 douyin-matrices 支持多种认证方式：

@@ -19,7 +19,6 @@ from .config import DashboardConfig
 from .db import Database
 from .orchestrator import Orchestrator
 from .utils import json_dumps, json_loads, split_terms
-from .qr_login import QrLoginManager
 
 from ..account_bridge import legacy_cookie_file, verify_account_cookies
 
@@ -42,8 +41,7 @@ def _run_visible_bind(account_id: int, alias: str, cookie_file: str) -> None:
 
     对标 xiaohongshu 的 ``POST /accounts/{id}/bind``（弹可见 Camoufox 窗口）。
     无显示器 / 纯无头服务器环境会让 ``headless=False`` 启动失败，此时登录态
-    保持 ``needs_login``，用户可改用网页无头二维码（/bind-qr）或 CLI
-    ``dy account add``。
+    保持 ``needs_login``，用户需改用 CLI ``dy account add <别名>``。
     """
     from .config import DashboardConfig
     from .db import Database
@@ -76,9 +74,6 @@ def create_app() -> FastAPI:
     orch = Orchestrator(db, cfg)
     orch.start()  # 无操作，除非 DY_ORCHESTRATOR=1
     orch.install(app)
-    # 网页内扫码绑定：无头浏览器会话管理器（不在导入时启动浏览器）
-    qr_manager = QrLoginManager()
-    app.state.qr_manager = qr_manager
     # 后台线程池：承载"弹可见浏览器"的账号绑定（对标 xhs 的 /accounts/{id}/bind）
     app.state.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bind")
 
@@ -146,55 +141,22 @@ def create_app() -> FastAPI:
             "/accounts?msg=已弹出浏览器窗口，请用抖音 App 扫码登录", status_code=303
         )
 
-    # ── 网页内扫码绑定（无头二维码）────────────────────────────────────────────
-    @app.get("/bind-qr", response_class=HTMLResponse)
-    def bind_qr_new():
-        return _render("bind_qr.html", account=None)
-
-    @app.get("/accounts/{account_id}/bind-qr", response_class=HTMLResponse)
-    def bind_qr_existing(account_id: int):
-        acc = db.get_account(account_id)
-        if not acc:
-            return RedirectResponse("/accounts", status_code=303)
-        return _render("bind_qr.html", account=acc)
-
-    @app.post("/api/accounts/qr-start")
-    def api_qr_start(account_id: int | None = Form(None), alias: str = Form("")):
-        # 确定别名：优先用表单，其次用已有账号行的别名
-        if not alias and account_id:
-            acc = db.get_account(account_id)
-            if acc:
-                alias = acc["alias"]
+    # ── 网页账号绑定：弹出可见浏览器窗口扫码（对标 xiaohongshu 的 /accounts/{id}/bind）──
+    @app.post("/accounts/create")
+    def create_account_post(alias: str = Form(...)):
+        alias = (alias or "").strip()
         if not alias:
-            return JSONResponse({"ok": False, "error": "缺少账号别名"}, status_code=400)
-        # 解析/创建账号行的 cookie 路径
+            return RedirectResponse("/accounts?msg=别名不能为空", status_code=303)
+        cookie_file = legacy_cookie_file(alias)
         acc = db.get_account_by_alias(alias)
-        cookie_file = (acc or {}).get("cookie_file") or legacy_cookie_file(alias)
-        result = app.state.qr_manager.start(alias, cookie_file)
-        if result.get("error"):
-            return JSONResponse({"ok": False, "error": result["error"]})
-        return JSONResponse(
-            {
-                "ok": True,
-                "session_id": result["session_id"],
-                "qr_image_url": result["qr_image_url"],
-            }
+        if not acc:
+            db.create_account(alias=alias, cookie_file=cookie_file)
+            acc = db.get_account_by_alias(alias)
+        # 新建即弹出一个可见 Chromium 窗口供扫码（后台线程，不阻塞请求）
+        app.state.executor.submit(_run_visible_bind, acc["id"], alias, cookie_file)
+        return RedirectResponse(
+            "/accounts?msg=已弹出浏览器窗口，请用抖音 App 扫码登录", status_code=303
         )
-
-    @app.get("/api/accounts/qr-status")
-    def api_qr_status(session: str = ""):
-        if not session:
-            return JSONResponse({"status": "gone"})
-        return JSONResponse(app.state.qr_manager.status(session))
-
-    @app.get("/api/accounts/qr-image")
-    def api_qr_image(session: str = ""):
-        if not session:
-            return JSONResponse({"error": "missing session"}, status_code=400)
-        path = app.state.qr_manager.qr_image(session)
-        if not path or not Path(path).is_file():
-            return JSONResponse({"error": "not ready"}, status_code=404)
-        return FileResponse(path, media_type="image/png")
 
     @app.get("/api/accounts")
     def api_accounts():
