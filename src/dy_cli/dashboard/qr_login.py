@@ -98,7 +98,12 @@ def _launch_qr_browser(alias: str):
 
 
 def _capture_qr(page: Any, png_path: str) -> bool:
-    """Screenshot the Douyin login QR to ``png_path``; True on success."""
+    """Screenshot the Douyin login QR to ``png_path``; True on success.
+
+    Writes to a ``.tmp`` file first, then atomically ``os.replace``-es it onto
+    the final path so a concurrent ``/qr-image`` GET never reads a half-written
+    PNG (Playwright's ``screenshot(path=...)`` is not atomic on its own).
+    """
     candidates = [
         "canvas",
         'img[src*="qrcode"]',
@@ -108,11 +113,13 @@ def _capture_qr(page: Any, png_path: str) -> bool:
         '[class*="scan"] canvas',
         'img[src*="login"]',
     ]
+    tmp_path = png_path + ".tmp"
     for sel in candidates:
         try:
             el = page.locator(sel).first
             if el.count() > 0 and el.is_visible():
-                el.screenshot(path=png_path)
+                el.screenshot(path=tmp_path)
+                os.replace(tmp_path, png_path)
                 return True
         except Exception:
             continue
@@ -122,7 +129,8 @@ def _capture_qr(page: Any, png_path: str) -> bool:
         if anchor.count() > 0:
             container = anchor.locator("..")
             if container.count() > 0:
-                container.screenshot(path=png_path)
+                container.screenshot(path=tmp_path)
+                os.replace(tmp_path, png_path)
                 return True
     except Exception:
         pass

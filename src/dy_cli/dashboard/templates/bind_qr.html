@@ -42,11 +42,27 @@
   const startBtn = document.getElementById('start-btn');
   const retryBtn = document.getElementById('retry-btn');
   let sessionId = '';
+  let qrImageUrl = '';
   let pollTimer = null;
 
   function setStatus(text, cls) {
     statusEl.textContent = text;
     statusEl.className = 'badge ' + (cls || 'dim');
+  }
+
+  function showQr() {
+    if (!qrImageUrl) return;
+    // 每次轮询重新加载并加缓存时间戳：保证显示的是后端最新二维码，
+    // 同时覆盖后端「过期前自动刷新」写入的新 PNG（否则页面会停留旧码）。
+    const sep = qrImageUrl.includes('?') ? '&' : '?';
+    const url = qrImageUrl + sep + 't=' + Date.now();
+    const img = new Image();
+    img.onload = () => {
+      qrImg.src = url;
+      qrImg.style.display = 'block';
+      qrPlaceholder.style.display = 'none';
+    };
+    img.src = url;
   }
 
   async function startQr() {
@@ -85,10 +101,8 @@
     }
 
     sessionId = data.session_id;
-    qrImg.src = data.qr_image_url;
-    qrImg.style.display = 'block';
-    qrPlaceholder.style.display = 'none';
-    setStatus('请使用抖音 App 扫码', 'ok');
+    qrImageUrl = data.qr_image_url;
+    setStatus('正在生成二维码…', 'dim');
     startBtn.style.display = 'none';
     poll();
   }
@@ -102,10 +116,12 @@
         setStatus('绑定成功 ✓', 'ok');
         setTimeout(() => { window.location.href = '/accounts'; }, 1500);
         return;
-      } else if (data.status === 'scanning') {
+      } else       if (data.status === 'scanning') {
         setStatus('已扫描，请在手机上确认', 'ok');
+        showQr();
       } else if (data.status === 'waiting') {
         setStatus('等待扫码…', 'dim');
+        showQr();
       } else if (data.status === 'expired') {
         setStatus('二维码已过期，请重新生成', 'warn');
         retryBtn.style.display = 'inline-block';
