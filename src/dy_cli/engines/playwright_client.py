@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 from datetime import datetime
 
 from dy_cli.utils import config
@@ -468,6 +469,79 @@ class PlaywrightClient:
     # Publish image/text
     # ------------------------------------------------------------------
 
+    async def _apply_default_bgm(self, page) -> None:
+        """图文发布前自动选择系统默认/随机 BGM（best-effort，失败静默）。
+
+        抖音图文发布页存在"添加音乐"入口；若当前未配置 BGM，自动从
+        系统推荐音乐中随机选一首，避免因缺少/无效 BGM 导致发布报错。
+        任何步骤失败都只打印提示，绝不抛出异常、绝不阻断发布。
+        """
+        try:
+            # 1) 查找"添加音乐"入口（文案优先，class 兜底）
+            add_music = None
+            for sel in (
+                "text=添加音乐",
+                "text=添加背景音乐",
+                "text=选择音乐",
+                '[class*="addMusic"]',
+                '[class*="add-music"]',
+                '[class*="music-btn"]',
+                '[class*="bgm"] button',
+                '[class*="music"] button',
+            ):
+                loc = page.locator(sel).first
+                try:
+                    if await loc.count() > 0 and await loc.is_visible():
+                        add_music = loc
+                        break
+                except Exception:
+                    continue
+            if add_music is None:
+                return  # 页面无 BGM 功能，无需处理
+
+            await add_music.click()
+            await page.wait_for_timeout(1200)
+
+            # 2) 优先切换到"推荐 / 系统推荐 / 热门"分类
+            for tab_sel in ("text=推荐", "text=系统推荐", "text=热门", "text=为你推荐"):
+                tab = page.locator(tab_sel).first
+                try:
+                    if await tab.count() > 0 and await tab.is_visible():
+                        await tab.click()
+                        await page.wait_for_timeout(800)
+                        break
+                except Exception:
+                    continue
+
+            # 3) 从可见音乐列表中随机选一首
+            items = page.locator(
+                '[class*="music-item"], [class*="song-item"], [class*="music-list"] li, '
+                '[class*="recommend"] [class*="item"], [class*="audio"] [class*="item"], '
+                '[class*="music"] li'
+            )
+            n = await items.count()
+            if n == 0:
+                # 面板没有可选音乐，直接关闭
+                await page.keyboard.press("Escape")
+                return
+            idx = random.randint(0, n - 1)
+            await items.nth(idx).click()
+            await page.wait_for_timeout(1000)
+
+            # 4) 确认使用（部分版本需要点"使用 / 确定 / 完成"）
+            for ok_sel in ("text=使用", "text=确定", "text=完成", "text=保存"):
+                ok_btn = page.locator(ok_sel).first
+                try:
+                    if await ok_btn.count() > 0 and await ok_btn.is_visible():
+                        await ok_btn.click()
+                        await page.wait_for_timeout(600)
+                        break
+                except Exception:
+                    continue
+            print("[dy] 已选择系统默认 BGM（随机）")
+        except Exception as e:
+            print(f"[dy] BGM 自动选择跳过: {e}")
+
     def publish_image_text(
         self,
         title: str,
@@ -556,6 +630,9 @@ class PlaywrightClient:
 
                 # 设置可见范围
                 await self._set_visibility(page, visibility)
+
+                # 自动选择系统默认 BGM（best-effort，失败不影响发布）
+                await self._apply_default_bgm(page)
 
                 # Handle schedule
                 if schedule_at:

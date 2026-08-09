@@ -138,3 +138,6 @@ def publish(ctx, title, content, content_file, video, images, tags, mention, vis
     except PlaywrightError as e:
         error(f"发布失败: {e}")
         raise SystemExit(1)
+    except Exception as e:  # 兜底：未预期异常也转为友好报错，避免 traceback 中断整批
+        error(f"发布异常: {type(e).__name__}: {e}")
+        raise SystemExit(1)
