@@ -41,6 +41,9 @@ QR_REFRESH_INTERVAL = 90
 
 PROFILES_ROOT = os.path.join(os.path.expanduser("~"), ".dy", "playwright_profiles")
 QR_IMAGES_ROOT = os.path.join(os.path.expanduser("~"), ".dy", "qr_images")
+# When capture fails we dump the live DOM + a full-page screenshot here so the
+# exact QR selector / a possible risk-control challenge can be calibrated.
+QR_DEBUG_ROOT = os.path.join(os.path.expanduser("~"), ".dy", "qr_debug")
 
 # Any of these cookie names appearing means a logged-in session has landed.
 LOGIN_COOKIE_KEYS = ("sessionid_ss", "sid_tt", "sid_guard", "sessionid")
@@ -79,15 +82,20 @@ def _launch_qr_browser(alias: str):
     )
     context = browser.new_context(
         locale="zh-CN",
+        viewport={"width": 1280, "height": 800},
         user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         ),
     )
-    # Anti-detection: hide the webdriver flag and re-add a believable chrome runtime.
+    # Anti-detection: 隐藏 webdriver 标志，并补齐 headless Chromium 常见的指纹缺口
+    # （空 plugins / 空 languages / 0 尺寸屏幕是 Douyin passport 风控的高频命中项）。
     context.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        "try { window.chrome = {runtime: {}}; } catch (e) {}"
+        "try { Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]}); } catch(e){}"
+        "try { Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN','zh','en']}); } catch(e){}"
+        "try { Object.defineProperty(navigator, 'language', {get: () => 'zh-CN'}); } catch(e){}"
+        "try { window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}}; } catch(e){}"
     )
     page = context.new_page()
     # Douyin shows the scan-or-phone login dialog on the home page; open it and
@@ -100,41 +108,97 @@ def _launch_qr_browser(alias: str):
 def _capture_qr(page: Any, png_path: str) -> bool:
     """Screenshot the Douyin login QR to ``png_path``; True on success.
 
-    Writes to a ``.tmp`` file first, then atomically ``os.replace``-es it onto
-    the final path so a concurrent ``/qr-image`` GET never reads a half-written
-    PNG (Playwright's ``screenshot(path=...)`` is not atomic on its own).
+    Searches the main frame **and any iframes** (Douyin passport frequently
+    renders the QR inside an iframe). Writes a ``.tmp`` file first, then
+    atomically ``os.replace``-es it onto the final path so a concurrent
+    ``/qr-image`` GET never reads a half-written PNG.
+
+    Returns False if no plausible QR element is found (caller should then dump
+    diagnostics via ``_dump_qr_diagnostics``).
     """
     candidates = [
         "canvas",
         'img[src*="qrcode"]',
         'img[src*="qr"]',
+        'img[src*="login"]',
+        'img[src*="scan"]',
         '[class*="qrcode"] img',
         '[class*="qr-code"] img',
+        '[class*="qrcode"] canvas',
+        '[class*="qr"] canvas',
         '[class*="scan"] canvas',
-        'img[src*="login"]',
+        '[id*="qrcode"] img',
+        '[id*="qr"] img',
     ]
+    # main frame + all child frames (iframes)
+    frames = [page] + list(getattr(page, "frames", []) or [])
     tmp_path = png_path + ".tmp"
-    for sel in candidates:
-        try:
-            el = page.locator(sel).first
-            if el.count() > 0 and el.is_visible():
+    for frame in frames:
+        for sel in candidates:
+            try:
+                el = frame.locator(sel).first
+                if el.count() == 0:
+                    continue
+                if not el.is_visible():
+                    continue
+                box = el.bounding_box()
+                # ignore zero/near-zero sized matches (e.g. hidden canvases)
+                if not box or box["width"] < 40 or box["height"] < 40:
+                    continue
                 el.screenshot(path=tmp_path)
                 os.replace(tmp_path, png_path)
                 return True
+            except Exception:
+                continue
+    # Fallback: walk up from the 扫码登录 prompt (up to 5 ancestor levels).
+    for frame in frames:
+        try:
+            anchor = frame.get_by_text("扫码登录", exact=False).first
+            if anchor.count() == 0:
+                continue
+            node = anchor
+            for _ in range(5):
+                node = node.locator("..")
+                if node.count() == 0:
+                    break
+                try:
+                    box = node.bounding_box()
+                except Exception:
+                    box = None
+                if box and box["width"] > 60 and box["height"] > 60:
+                    node.screenshot(path=tmp_path)
+                    os.replace(tmp_path, png_path)
+                    return True
         except Exception:
             continue
-    # Fallback: the container around the 扫码登录 prompt.
+    return False
+
+
+def _dump_qr_diagnostics(page: Any, png_path: str) -> None:
+    """Save the live DOM HTML and a full-page screenshot for calibration.
+
+    Called when ``_capture_qr`` fails, so we can inspect the real Douyin login
+    page (which QR selector it uses, or whether a risk-control challenge is
+    shown instead of the QR). Paths are stored in ``QR_DEBUG_ROOT/last.txt``.
+    """
     try:
-        anchor = page.get_by_text("扫码登录", exact=False).first
-        if anchor.count() > 0:
-            container = anchor.locator("..")
-            if container.count() > 0:
-                container.screenshot(path=tmp_path)
-                os.replace(tmp_path, png_path)
-                return True
+        os.makedirs(QR_DEBUG_ROOT, exist_ok=True)
+        ts = int(time.time())
+        html_path = os.path.join(QR_DEBUG_ROOT, f"qr_dump_{ts}.html")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(page.content())
+        shot_path = os.path.join(QR_DEBUG_ROOT, f"qr_page_{ts}.png")
+        try:
+            page.screenshot(path=shot_path, full_page=True)
+        except Exception:
+            try:
+                page.screenshot(path=shot_path)
+            except Exception:
+                shot_path = "(截图失败)"
+        with open(os.path.join(QR_DEBUG_ROOT, "last.txt"), "w", encoding="utf-8") as f:
+            f.write(f"html={html_path}\nshot={shot_path}\n")
     except Exception:
         pass
-    return False
 
 
 def _login_cookies_present(context: Any) -> bool:
@@ -274,7 +338,7 @@ class QrLoginManager:
         try:
             # Capture the QR (retry briefly while it renders).
             qr_ok = False
-            for _ in range(20):
+            for _ in range(30):
                 if session.should_stop():
                     return
                 if _capture_qr(page, session.png_path):
@@ -282,9 +346,15 @@ class QrLoginManager:
                     break
                 time.sleep(0.5)
             if not qr_ok:
+                try:
+                    _dump_qr_diagnostics(page, session.png_path)
+                except Exception:
+                    pass
                 session.set_status(
                     "error",
-                    "未能捕获二维码（抖音可能启用了反爬校验，请改用 CLI: dy account add）",
+                    "未能捕获二维码（抖音可能启用了反爬校验，或二维码位于未识别的容器/iframe 中）。"
+                    f"诊断已存至 {QR_DEBUG_ROOT}，请把该目录下的 qr_dump_*.html 与 qr_page_*.png 反馈给我校准；"
+                    "或改用 CLI: dy account add <别名>（可见浏览器，最稳）",
                 )
                 return
             session.set_status("waiting")

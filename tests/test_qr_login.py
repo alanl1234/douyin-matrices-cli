@@ -171,3 +171,47 @@ def test_is_logged_in_ignores_homepage_url():
 
     assert qrl._is_logged_in(HomePage(), CtxNoLogin()) is False
     assert qrl._is_logged_in(HomePage(), CtxLoggedIn()) is True
+
+
+def test_capture_qr_returns_false_on_empty_page_and_dumps_diagnostics(tmp_path, monkeypatch):
+    """当页面上找不到任何二维码元素时，捕获应返回 False，并把诊断落盘。"""
+    import dy_cli.dashboard.qr_login as qrl
+
+    monkeypatch.setattr(qrl, "QR_DEBUG_ROOT", str(tmp_path))
+
+    class _Loc:
+        def count(self):
+            return 0
+
+        def is_visible(self):
+            return False
+
+        def bounding_box(self):
+            return None
+
+        def screenshot(self, path):
+            pass
+
+        def locator(self, sel):
+            return _Loc()
+
+    class _Page:
+        frames = []
+
+        def locator(self, sel):
+            return _Loc()
+
+        def get_by_text(self, *a, **k):
+            return _Loc()
+
+        def content(self):
+            return "<html><body>no-qr</body></html>"
+
+        def screenshot(self, path, full_page=False):
+            pass
+
+    png = str(tmp_path / "qr.png")
+    assert qrl._capture_qr(_Page(), png) is False
+    qrl._dump_qr_diagnostics(_Page(), png)
+    assert (tmp_path / "last.txt").exists()
+    assert list(tmp_path.glob("qr_dump_*.html"))
