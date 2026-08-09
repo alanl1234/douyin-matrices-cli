@@ -2,7 +2,8 @@
 {% block title %}账号矩阵 · douyin-matrices{% endblock %}
 {% block content %}
 <h1>账号矩阵</h1>
-<p class="hint">通过 CLI <code>dy account add &lt;名称&gt;</code> 添加账号会在此登记。也可用 <code>dy account import-legacy</code> 导入旧 cookie。或用下方「添加账号（扫码）」在网页内直接扫码绑定。</p>
+{% if msg %}<div class="banner">{{ msg }}</div>{% endif %}
+<p class="hint">通过 CLI <code>dy account add &lt;名称&gt;</code> 添加账号会在此登记。也可用 <code>dy account import-legacy</code> 导入旧 cookie。账号行上的「扫码绑定」会<strong>弹出可见浏览器窗口</strong>供扫码（对标 xiaohongshu）；无显示器/无头服务器环境弹窗失败时，改用「扫码」走网页无头二维码（保底）。</p>
 
 <div class="panel">
   <div class="toolbar">
@@ -31,7 +32,7 @@
             </select>
         </td>
         <td><input name="group" value="{{ a.group_name or '' }}" size="8" placeholder="分组"></td>
-        <td>
+        <td id="st-{{ a.id }}">
           {% if a.login_status == 'ready' %}<span class="badge ok">就绪</span>
           {% elif a.login_status == 'legacy' %}<span class="badge dim">旧</span>
           {% elif a.login_status == 'unbound' %}<span class="badge warn">待绑定</span>
@@ -43,9 +44,9 @@
         </td>
         <td><button class="secondary" type="submit">保存</button></form></td>
         <td class="actions">
-          <a class="mini" href="/accounts/{{ a.id }}/bind-qr">扫码</a>
+          <a class="mini" href="/accounts/{{ a.id }}/bind-qr" title="网页无头二维码（保底）">扫码</a>
           <form class="inline" method="post" action="/accounts/{{ a.id }}/verify"><button class="mini" type="submit">校验</button></form>
-          <form class="inline" method="post" action="/accounts/{{ a.id }}/bind"><button class="mini" type="submit">重绑</button></form>
+          <form class="inline" method="post" action="/accounts/{{ a.id }}/bind"><button class="mini" type="submit" title="弹出可见浏览器窗口扫码">扫码绑定</button></form>
           <form class="inline" method="post" action="/accounts/{{ a.id }}/toggle"><button class="mini" type="submit">{% if a.enabled %}停用{% else %}启用{% endif %}</button></form>
           <form class="inline" method="post" action="/accounts/{{ a.id }}/delete" onsubmit="return confirm('确认删除该账号？');"><button class="mini danger" type="submit">删除</button></form>
         </td>
@@ -57,4 +58,26 @@
   <div class="empty">暂无账号。运行 <code>dy account add &lt;名称&gt;</code> 开始。</div>
   {% endif %}
 </div>
+
+<script>
+  // 绑定中自动轮询状态（弹窗扫码完成 → 徽标变「就绪」）
+  const BIND_BADGE = {
+    binding: '<span class="badge warn">绑定中…</span>',
+    ready: '<span class="badge ok">就绪</span>',
+    needs_login: '<span class="badge warn">需重绑</span>',
+    unbound: '<span class="badge warn">待绑定</span>',
+    legacy: '<span class="badge dim">旧</span>',
+  };
+  function refreshStatus(id) {
+    fetch('/api/accounts/' + id + '/status').then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) return;
+      const el = document.getElementById('st-' + id);
+      if (el && BIND_BADGE[d.login_status]) el.innerHTML = BIND_BADGE[d.login_status];
+      if (d.login_status === 'binding') setTimeout(function () { refreshStatus(id); }, 2000);
+    }).catch(function () {});
+  }
+  document.querySelectorAll('[id^="st-"]').forEach(function (el) {
+    refreshStatus(el.id.split('-')[1]);
+  });
+</script>
 {% endblock %}

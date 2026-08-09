@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,38 @@ def _render(name: str, **kw: Any) -> HTMLResponse:
     return HTMLResponse(_env.get_template(name).render(**kw))
 
 
+def _run_visible_bind(account_id: int, alias: str, cookie_file: str) -> None:
+    """后台线程：弹出一个可见的 Playwright Chromium 窗口供用户扫码登录。
+
+    对标 xiaohongshu 的 ``POST /accounts/{id}/bind``（弹可见 Camoufox 窗口）。
+    无显示器 / 纯无头服务器环境会让 ``headless=False`` 启动失败，此时登录态
+    保持 ``needs_login``，用户可改用网页无头二维码（/bind-qr）或 CLI
+    ``dy account add``。
+    """
+    from .config import DashboardConfig
+    from .db import Database
+    from ..account_bridge import register_or_update_account
+    from ..engines.playwright_client import PlaywrightClient
+
+    dbx = Database(DashboardConfig.load().database_path)
+    try:
+        dbx.set_login_status(account_id, "binding", error=None)
+        client = PlaywrightClient(account=alias, headless=False)
+        ok = client.login()
+        if ok:
+            # register_or_update_account 会把 login_status 置为 ready 并落盘 cookie 路径
+            register_or_update_account(alias, cookie_file=cookie_file, login_status="ready")
+            dbx.set_login_status(account_id, "ready", error=None)
+        else:
+            dbx.set_login_status(account_id, "needs_login", error="扫码登录未完成或已超时（2 分钟）")
+    except Exception as exc:  # 无显示器 / 无头环境无法弹出窗口
+        dbx.set_login_status(
+            account_id,
+            "needs_login",
+            error=f"无法弹出浏览器: {exc}；请改用网页扫码或 dy account add",
+        )
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="douyin-matrices 后台")
     cfg = DashboardConfig.load()
@@ -46,6 +79,8 @@ def create_app() -> FastAPI:
     # 网页内扫码绑定：无头浏览器会话管理器（不在导入时启动浏览器）
     qr_manager = QrLoginManager()
     app.state.qr_manager = qr_manager
+    # 后台线程池：承载"弹可见浏览器"的账号绑定（对标 xhs 的 /accounts/{id}/bind）
+    app.state.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bind")
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -57,10 +92,11 @@ def create_app() -> FastAPI:
         return _render("dashboard.html", accounts=accounts, personas=personas, tasks=tasks, orch_enabled=orch.enabled)
 
     @app.get("/accounts", response_class=HTMLResponse)
-    def accounts_page():
+    def accounts_page(request: Request):
         accounts = db.list_accounts()
         personas = db.list_personas()
-        return _render("accounts.html", accounts=accounts, personas=personas)
+        msg = request.query_params.get("msg", "")
+        return _render("accounts.html", accounts=accounts, personas=personas, msg=msg)
 
     @app.post("/accounts/{account_id}/update")
     def update_account_post(
@@ -100,10 +136,15 @@ def create_app() -> FastAPI:
     @app.post("/accounts/{account_id}/bind")
     def bind_account_post(account_id: int):
         acc = db.get_account(account_id)
-        if acc:
-            # 标记待重新绑定：下次 `dy login --account <alias>` 会重新拉起浏览器登录
-            db.set_login_status(account_id, "unbound")
-        return RedirectResponse("/accounts", status_code=303)
+        if not acc:
+            return RedirectResponse("/accounts", status_code=303)
+        alias = acc["alias"]
+        cookie_file = acc.get("cookie_file") or legacy_cookie_file(alias)
+        # 弹出一个可见 Chromium 窗口供扫码（后台线程，不阻塞请求）
+        app.state.executor.submit(_run_visible_bind, account_id, alias, cookie_file)
+        return RedirectResponse(
+            "/accounts?msg=已弹出浏览器窗口，请用抖音 App 扫码登录", status_code=303
+        )
 
     # ── 网页内扫码绑定（无头二维码）────────────────────────────────────────────
     @app.get("/bind-qr", response_class=HTMLResponse)
@@ -159,6 +200,19 @@ def create_app() -> FastAPI:
     def api_accounts():
         accounts = [db.get_account_health(int(a["id"])) for a in db.list_accounts()]
         return JSONResponse({"ok": True, "accounts": accounts})
+
+    @app.get("/api/accounts/{account_id}/status")
+    def api_account_status(account_id: int):
+        acc = db.get_account(account_id)
+        if not acc:
+            return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+        return JSONResponse(
+            {
+                "ok": True,
+                "login_status": acc.get("login_status"),
+                "last_error": acc.get("last_error"),
+            }
+        )
 
     @app.get("/api/health")
     def api_health():
