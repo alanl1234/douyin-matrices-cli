@@ -139,17 +139,18 @@ def _login_cookies_present(context: Any) -> bool:
 
 
 def _is_logged_in(page: Any, context: Any) -> bool:
-    if _login_cookies_present(context):
-        return True
-    try:
-        url = page.url
-    except Exception:
-        return False
-    if "creator-micro" in url:
-        return True
-    if "douyin.com" in url and "passport" not in url and "login" not in url:
-        return True
-    return False
+    """判定是否已登录。
+
+    登录态**只能**以登录 cookie 为依据，绝不能依据页面 URL。抖音首页在
+    未登录时 URL 仍然是 ``https://www.douyin.com/``，若用
+    ``"douyin.com" in url`` 这类启发式判断，会误判为已登录，导致用户尚未
+    扫码就直接 ``bound``（表现为「无操作显示绑定成功」，且二维码图片因
+    会话瞬间结束被删除而加载失败）。登录成功后抖音会写入 ``sessionid_ss`` /
+    ``sid_tt`` 等 cookie，这才是权威证据。
+
+    ``page`` 参数保留以兼容调用点与测试 mock，当前判定不使用它。
+    """
+    return _login_cookies_present(context)
 
 
 def _is_qr_scanned(page: Any) -> bool:

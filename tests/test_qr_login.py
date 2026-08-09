@@ -149,3 +149,25 @@ def test_qr_refresh_on_expiry():
         time.sleep(0.05)
     mgr.close(sid)
     assert refresh_calls, "expected at least one QR refresh on expiry"
+
+
+def test_is_logged_in_ignores_homepage_url():
+    """未登录首页 URL 含 douyin.com，绝不能误判为已登录（否则无操作就 bound）。
+
+    复现并锁定此前线上 bug：start() 打开 www.douyin.com 首页，未登录时其 URL
+    仍是 ``www.douyin.com``，若用 ``"douyin.com" in url`` 判定登录，会瞬间 bound
+    —— 表现为「无操作显示绑定成功」且二维码图片因会话被立即删除而加载失败。
+    """
+    class CtxNoLogin:
+        def cookies(self):
+            return [{"name": "ttwid", "value": "x"}]  # 非登录态 cookie
+
+    class CtxLoggedIn:
+        def cookies(self):
+            return [{"name": "sessionid_ss", "value": "x"}]  # 抖音登录态 cookie
+
+    class HomePage:
+        url = "https://www.douyin.com/"  # 未登录首页
+
+    assert qrl._is_logged_in(HomePage(), CtxNoLogin()) is False
+    assert qrl._is_logged_in(HomePage(), CtxLoggedIn()) is True
