@@ -297,7 +297,7 @@ class PlaywrightClient:
 
         return _run_async(
             self._publish_video_async(
-                title, content, video_path, tags, visibility, schedule_at, thumbnail_path
+                title, content, video_path, tags, visibility, schedule_at, thumbnail_path, mentions
             )
         )
 
@@ -486,7 +486,9 @@ class PlaywrightClient:
             raise PlaywrightError("未登录，请先运行: dy login")
 
         return _run_async(
-            self._publish_image_text_async(title, content, images, tags, visibility, schedule_at)
+            self._publish_image_text_async(
+                title, content, images, tags, visibility, schedule_at, mentions
+            )
         )
 
     async def _publish_image_text_async(
