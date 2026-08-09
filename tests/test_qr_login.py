@@ -57,7 +57,8 @@ def _manager(run_in_thread: bool = True):
 
 def test_start_returns_session_and_qr_url():
     mgr = _manager()
-    with mock.patch.object(qrl, "_capture_qr", return_value=True):
+    with mock.patch.object(qrl, "_capture_qr", return_value=True), \
+         mock.patch.object(qrl, "_is_qr_expired", return_value=False):
         res = mgr.start("ali", _cookie_path("ali"))
     assert "session_id" in res and len(res["session_id"]) == 32
     assert res["qr_image_url"].startswith("/api/accounts/qr-image")
@@ -82,6 +83,7 @@ def test_status_bound_and_removed():
     mgr._launcher = lambda alias: (FakeBrowser(), FakeContext(), FakePage())
     with mock.patch.object(qrl, "_capture_qr", return_value=True), \
          mock.patch.object(qrl, "_is_logged_in", return_value=True), \
+         mock.patch.object(qrl, "_is_qr_expired", return_value=False), \
          mock.patch.object(account_bridge, "register_or_update_account") as reg:
         res = mgr.start("ali", _cookie_path("ali"))
     sid = res["session_id"]
@@ -93,7 +95,8 @@ def test_status_bound_and_removed():
 def test_status_waiting_until_closed():
     mgr = _manager()
     with mock.patch.object(qrl, "_capture_qr", return_value=True), \
-         mock.patch.object(qrl, "_is_logged_in", return_value=False):
+         mock.patch.object(qrl, "_is_logged_in", return_value=False), \
+         mock.patch.object(qrl, "_is_qr_expired", return_value=False):
         res = mgr.start("ali", _cookie_path("ali"))
     sid = res["session_id"]
     # wait until the loop has set a live status (not "starting")
@@ -120,3 +123,29 @@ def test_status_expired_via_sweep():
 def test_status_unknown_session_gone():
     mgr = QrLoginManager()
     assert mgr.status("nope")["status"] == "gone"
+
+
+def test_qr_refresh_on_expiry():
+    # When the QR is detected as expired, the manager must refresh + re-capture
+    # (so the served PNG stays scannable) instead of silently timing out.
+    mgr = _manager()  # runs in a background thread
+    refresh_calls = []
+    state = {"n": 0}
+
+    def fake_expired(*_a, **_k):
+        state["n"] += 1
+        return state["n"] <= 1  # expired on the first check, then fresh
+
+    with mock.patch.object(qrl, "_capture_qr", return_value=True), \
+         mock.patch.object(qrl, "_is_logged_in", return_value=False), \
+         mock.patch.object(qrl, "_is_qr_expired", side_effect=fake_expired), \
+         mock.patch.object(qrl, "_is_qr_scanned", return_value=False), \
+         mock.patch.object(qrl, "_refresh_qr", side_effect=lambda p: refresh_calls.append(1)):
+        res = mgr.start("ali", _cookie_path("ali"))
+    sid = res["session_id"]
+    for _ in range(80):
+        if refresh_calls:
+            break
+        time.sleep(0.05)
+    mgr.close(sid)
+    assert refresh_calls, "expected at least one QR refresh on expiry"

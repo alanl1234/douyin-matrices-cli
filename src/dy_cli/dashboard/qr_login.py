@@ -1,20 +1,28 @@
-"""Headless QR-code login for the dashboard, powered by Camoufox.
+"""Headless QR-code login for the dashboard, powered by Playwright (Chromium).
 
-Why Camoufox: Douyin aggressively fingerprints bare headless Chromium
-(``navigator.webdriver`` exposed, no stealth) and frequently refuses to render
-the QR or drops the session. Camoufox is a Firefox-based anti-detection Playwright
-wrapper (humanize fingerprint randomization) and is used *only* for web QR login;
-publishing/scraping still use the existing Playwright async client unchanged.
+Why Playwright (not Camoufox): unify on a single browser engine. Publishing and
+scraping already use Playwright Chromium, so using it for QR login too means ONE
+engine to install (no separate Firefox) and native ``storage_state`` cookies that
+the PlaywrightClient can load directly — this fixes the previous cross-engine
+(Firefox -> Chromium) cookie incompatibility that broke CLI publishing.
 
-Architecture fix (the old code polled a sync Playwright ``page`` from different
-FastAPI thread-pool threads, which crashed and was swallowed as "error"):
-- ``start()`` launches Camoufox inside ONE dedicated background thread that drives
-  the whole login poll loop; the page handle never crosses threads.
-- Main-thread ``status()`` / ``qr_image()`` / ``cancel()`` only read a thread-safe
-  state object or the QR PNG file; they never touch the browser.
-- On success, ``context.storage_state()`` exports a Playwright-compatible
-  storage_state JSON straight to ``~/.dy/cookies/<alias>.json``, so the existing
-  ``PlaywrightClient`` reuses it with zero changes (cookie bridge done here).
+Anti-detection: bare headless Chromium exposes ``navigator.webdriver`` and the
+``AutomationControlled`` flag, which Douyin's passport may use to refuse the QR or
+drop the session. We apply an undetected-chromium style patch (``add_init_script``
++ launch args) so the QR renders and the session sticks.
+
+QR expiry: Douyin login QR TTL is ~2 minutes. The poll loop keeps the served PNG
+fresh — it refreshes proactively well before expiry (unless the user is mid-scan)
+and also reacts to the explicit "expired" overlay — so the web page always shows a
+scannable code and binding never silently times out.
+
+Architecture (single-thread safe, unchanged):
+- ``start()`` launches Playwright inside ONE dedicated background thread that
+  drives the whole login poll loop; the page handle never crosses threads.
+- Main-thread ``status()`` / ``qr_image()`` / ``cancel()`` / ``close()`` only read
+  a thread-safe state object or the QR PNG file.
+- On success, ``context.storage_state()`` exports a Playwright storage_state JSON
+  straight to ``~/.dy/cookies/<alias>.json``.
 """
 from __future__ import annotations
 
@@ -24,14 +32,23 @@ import time
 import uuid
 from typing import Any, Callable
 
-# Douyin QR codes live ~2 minutes; give headroom before reporting expired.
-SESSION_TTL_SECONDS = 180
+# Douyin QR codes live ~2 minutes; keep a comfortable margin before reporting
+# the whole session expired. The inner QR is refreshed more often (see below).
+SESSION_TTL_SECONDS = 300
+# Refresh the QR well under Douyin's ~2min TTL so it never actually expires
+# before the user scans (skipped while the user is mid-scan -> "scanning").
+QR_REFRESH_INTERVAL = 90
 
-PROFILES_ROOT = os.path.join(os.path.expanduser("~"), ".dy", "camoufox_profiles")
+PROFILES_ROOT = os.path.join(os.path.expanduser("~"), ".dy", "playwright_profiles")
 QR_IMAGES_ROOT = os.path.join(os.path.expanduser("~"), ".dy", "qr_images")
 
 # Any of these cookie names appearing means a logged-in session has landed.
 LOGIN_COOKIE_KEYS = ("sessionid_ss", "sid_tt", "sid_guard", "sessionid")
+
+# Hints that the QR has expired / needs a refresh click.
+QR_EXPIRED_HINTS = ("二维码已失效", "已失效", "点击刷新二维码", "二维码已过期", "重新扫码")
+# Buttons/links that trigger a QR refresh.
+QR_REFRESH_HINTS = ("刷新", "点击刷新", "二维码已失效", "重新扫码", "重新获取")
 
 
 def _ensure_dirs() -> None:
@@ -40,51 +57,48 @@ def _ensure_dirs() -> None:
 
 
 def _launch_qr_browser(alias: str):
-    """Launch Camoufox (persistent_context + anti-detect); return (browser, context, page).
+    """Launch Playwright Chromium (stealth) for QR login; return (browser, context, page).
 
-    Imports camoufox lazily so this module imports cleanly without the browser
-    runtime (keeps CI import checks green). Falls back to ``humanize=False`` if the
-    humanize fingerprint data is not fetched yet, so login still works (weaker
-    stealth, but not a hard failure).
+    Imports Playwright lazily so this module imports cleanly without the browser
+    runtime (keeps CI import checks green). The Playwright driver handle is stashed
+    on the browser object (``_pw``) for cleanup in the caller's ``finally``.
     """
-    from camoufox.sync_api import Camoufox
+    from playwright.sync_api import sync_playwright
 
     profile_dir = os.path.join(PROFILES_ROOT, alias)
     os.makedirs(profile_dir, exist_ok=True)
-    try:
-        browser = Camoufox(
-            headless=True,
-            persistent_context=True,
-            user_data_dir=profile_dir,
-            humanize=True,
-            locale="zh-CN",
-        )
-    except Exception:
-        browser = Camoufox(
-            headless=True,
-            persistent_context=True,
-            user_data_dir=profile_dir,
-            humanize=False,
-            locale="zh-CN",
-        )
-    context = browser.contexts[0]
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(
+        headless=True,
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-infobars",
+        ],
+    )
+    context = browser.new_context(
+        locale="zh-CN",
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+    )
+    # Anti-detection: hide the webdriver flag and re-add a believable chrome runtime.
+    context.add_init_script(
+        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        "try { window.chrome = {runtime: {}}; } catch (e) {}"
+    )
     page = context.new_page()
     # Douyin shows the scan-or-phone login dialog on the home page; open it and
     # let the QR render. (Calibrate against the live Douyin login DOM if it changes.)
     page.goto("https://www.douyin.com/", wait_until="domcontentloaded")
+    browser._pw = pw  # keep driver handle for cleanup
     return browser, context, page
 
 
 def _capture_qr(page: Any, png_path: str) -> bool:
     """Screenshot the Douyin login QR to ``png_path``; True on success."""
-    # Prefer the scan-code tab if the dialog defaults to phone login.
-    try:
-        tab = page.get_by_text("扫码登录", exact=False).first
-        if tab.count() > 0:
-            tab.click()
-            page.wait_for_timeout(400)
-    except Exception:
-        pass
     candidates = [
         "canvas",
         'img[src*="qrcode"]',
@@ -148,6 +162,36 @@ def _is_qr_scanned(page: Any) -> bool:
     return False
 
 
+def _is_qr_expired(page: Any) -> bool:
+    """Detect Douyin's 'QR expired' overlay."""
+    for hint in QR_EXPIRED_HINTS:
+        try:
+            if page.get_by_text(hint, exact=False).count() > 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _refresh_qr(page: Any) -> None:
+    """Refresh the Douyin login QR (its TTL expired)."""
+    for hint in QR_REFRESH_HINTS:
+        try:
+            btn = page.get_by_text(hint, exact=False).first
+            if btn.count() > 0:
+                btn.click()
+                page.wait_for_timeout(600)
+                return
+        except Exception:
+            continue
+    # Fallback: reload the login page to regenerate the QR.
+    try:
+        page.goto("https://www.douyin.com/", wait_until="domcontentloaded")
+        page.wait_for_timeout(800)
+    except Exception:
+        pass
+
+
 class QrSession:
     """Thread-safe live login session state (never holds the page object)."""
 
@@ -159,6 +203,7 @@ class QrSession:
         self.created_at = time.time()
         self.status = "starting"  # starting -> waiting -> scanning -> bound -> error/expired
         self.error: str | None = None
+        self.refreshed_at = time.time()
         self._stop = threading.Event()
         self._lock = threading.Lock()
 
@@ -214,8 +259,8 @@ class QrLoginManager:
     def _run(self, session: QrSession) -> None:
         try:
             browser, context, page = self._launcher(session.alias)
-        except Exception as e:  # e.g. camoufox/firefox not installed
-            session.set_status("error", f"无法启动 Camoufox: {e}")
+        except Exception as e:  # e.g. playwright/chromium not installed
+            session.set_status("error", f"无法启动浏览器(Playwright): {e}")
             return
         try:
             # Capture the QR (retry briefly while it renders).
@@ -259,7 +304,30 @@ class QrLoginManager:
                     )
                     session.set_status("bound")
                     return
-                session.set_status("scanning" if _is_qr_scanned(page) else "waiting")
+
+                # User is mid-scan (phone shows confirmation) -> don't disrupt.
+                if _is_qr_scanned(page):
+                    session.set_status("scanning")
+                    time.sleep(2)
+                    continue
+
+                # Keep the QR fresh: react to the explicit expiry overlay, and
+                # proactively refresh before Douyin's ~2min TTL elapses.
+                if _is_qr_expired(page) or (
+                    time.time() - session.refreshed_at > QR_REFRESH_INTERVAL
+                ):
+                    _refresh_qr(page)
+                    for _ in range(10):
+                        if session.should_stop():
+                            return
+                        if _capture_qr(page, session.png_path):
+                            break
+                        time.sleep(0.3)
+                    session.refreshed_at = time.time()
+                    session.set_status("waiting")
+                    continue
+
+                session.set_status("waiting")
                 time.sleep(2)
             session.set_status("expired")
         except Exception as e:
@@ -267,6 +335,12 @@ class QrLoginManager:
         finally:
             try:
                 browser.close()
+            except Exception:
+                pass
+            try:
+                pw = getattr(browser, "_pw", None)
+                if pw is not None:
+                    pw.stop()
             except Exception:
                 pass
             try:

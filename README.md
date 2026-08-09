@@ -282,7 +282,7 @@ dy-dashboard                         # Launch web dashboard → http://127.0.0.1
 | `~/.xiaohongshu-cli/dashboard` | `~/.douyin-matrices` |
 | `XHS_*` env vars | `DY_*` env vars |
 | Xiaohongshu account matrix | Douyin account matrix (reuses native `~/.dy/cookies`) |
-| `account_bridge` Camoufox cookie decryption | `account_bridge` Playwright `storage_state` + session cache + Profile lock |
+| `account_bridge` Camoufox cookie decryption | `account_bridge` Playwright `storage_state` + session cache + Profile lock (single Chromium engine) |
 | `P0Store` + `DurableTaskQueue` | Same durable queue (`rate_limit.sqlite3`) |
 | `engagement.py` engagement grayscale | `engagement.py` (shadow/inbound/reviewed + warm-lead + blocklist + budget) |
 | `collector` / `reading` material collection | `collector.py` (search + comments + resumable) |
