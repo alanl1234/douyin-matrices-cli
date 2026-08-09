@@ -52,6 +52,28 @@ uv sync --extra dev
 This tool ships **two interfaces**: the **command line `dy`** and the **local dashboard `dy-dashboard`**.
 After launching the dashboard, visit http://127.0.0.1:8765 to use account management, persona library, search, publishing, orchestration, engagement governance, and material collection.
 
+## Deployment (Chromium / Playwright 国内镜像)
+
+本项目统一使用 **Playwright Chromium** 作为浏览器引擎（已移除 Camoufox 依赖）。国内环境从官方 CDN 直连下载浏览器二进制极慢，请改用国内镜像，一行环境变量即可，比 Camoufox 从 GitHub Releases 下载更稳：
+
+```bash
+# 1) 设置国内镜像（不要带协议头与 /download 后缀，Playwright 会自动拼接 https:// 与下载路径）
+export PLAYWRIGHT_DOWNLOAD_HOST=npmmirror.com/mirrors/playwright   # Linux / macOS
+#    PowerShell:  $env:PLAYWRIGHT_DOWNLOAD_HOST="npmmirror.com/mirrors/playwright"
+
+# 2) 仅安装 Chromium（约 150MB，避免默认拉取 Firefox / WebKit）
+playwright install chromium
+
+# 3) 无头（headless）运行所需的系统依赖（Linux 服务器必装）
+playwright install-deps chromium        # Ubuntu / Debian；CentOS 用对应的 rpm 包
+```
+
+- 下载超时可调：`export PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=600000`（10 分钟）。
+- 有海外代理时也可走代理：`export HTTPS_PROXY=http://<ip>:<port>`。
+- 若本机已有兼容 Chromium，可用 `executable_path` 复用（高级用法，见 `engines/playwright_client.py`）。
+
+> **为什么是 Playwright 而非 Camoufox？** 抖音个人号没有公开的视频 / 图文上传 REST API，发布必须走真实浏览器自动化。Camoufox 基于 Firefox 且其二进制从 GitHub 下载，国内同样被限速；而 Playwright 有成熟的 npmmirror 镜像。抖音网页主要按 Chromium 调优，Chromium 原生契合度更高。CLI 与网页后台共用同一套 Playwright 引擎与 cookie 格式，已根治此前 Camoufox↔Chromium 跨引擎 cookie 不兼容问题。
+
 ## Usage
 
 ```bash
@@ -126,6 +148,11 @@ dy account toggle primary            # Enable / disable this account
 
 ## Authentication
 
+> **Login & task model (CLI-first)**
+> - **Preferred: CLI visible-browser scan** — `dy login` / `dy account add <alias>` opens a real Chromium window for you to scan with the Douyin App. Most authentic, most anti-bot friendly. Cookies land in `~/.dy/cookies/<alias>.json`.
+> - **Fallback: web dashboard headless QR** — `dy-dashboard` → *账号矩阵 → ＋ 添加账号（扫码）* launches a *headless* Chromium that renders the login QR to the page (mirrors xiaohongshu's `/qr-bind` headless mode). Scan + confirm on your phone; cookies are persisted the same way. Fall back to the CLI when headless is challenged or the environment misbehaves.
+> - **All tasks default to the CLI** — publish, interact, analytics, comments, search, download, trending, live are all `dy` subcommands. The web dashboard is a management view only; it does not replace CLI execution.
+
 douyin-matrices supports multiple authentication methods:
 
 1. **Saved cookies** — stored per account under `~/.dy/cookies/<alias>.json` (Playwright `storage_state`)
@@ -136,7 +163,11 @@ douyin-matrices supports multiple authentication methods:
 Use `--browser` to specify extraction explicitly, or `dy login` for the QR flow.
 Other authenticated commands automatically retry once with fresh browser cookies when the saved session has expired.
 
-### Web QR binding (dashboard)
+### Web QR binding (dashboard) — *fallback* login
+
+This is the **fallback** login path. The recommended primary path is the CLI visible-browser scan
+(`dy login` / `dy account add <alias>`), which is more robust against anti-bot checks. Use the web
+QR only when you cannot run a local browser, or to re-bind an account from the management page.
 
 You can bind / re-bind an account **from the web dashboard** without opening a local
 browser: the dashboard backend launches a *headless* Playwright browser, captures the
@@ -456,6 +487,11 @@ dy account toggle primary            # 启用 / 停用该账号
 ```
 
 ## 认证策略
+
+> **登录与任务模型（CLI 优先）**
+> - **首选：CLI 可见浏览器扫码** —— `dy login` / `dy account add <alias>` 打开真实 Chromium 窗口，用抖音 App 扫码，真实性最强、风控最友好。Cookie 落 `~/.dy/cookies/<alias>.json`。
+> - **保底：网页后台无头二维码** —— `dy-dashboard` 的「账号矩阵 → ＋ 添加账号（扫码）」启动 headless Chromium 把登录二维码渲染到页面（对标 xiaohongshu 项目的 `/qr-bind` headless 模式），扫码确认后同样落盘 Cookie。无头被风控或环境异常时回退到 CLI。
+> - **所有任务默认走 CLI** —— 发布、互动、数据、评论、搜索、下载、热榜、直播等均为 `dy` 子命令；网页后台仅作管理视图，不替代 CLI 执行。
 
 douyin-matrices 支持多种认证方式：
 
