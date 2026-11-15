@@ -111,8 +111,11 @@ cli.add_command(download)
 
 # 发布
 from dy_cli.commands.publish import publish
+from dy_cli.commands.publish_batch import bookable, publish_batch
 
 cli.add_command(publish)
+cli.add_command(publish_batch)
+cli.add_command(bookable)
 
 # 互动
 from dy_cli.commands.interact import comment, comments, favorite, follow, like

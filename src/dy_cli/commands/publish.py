@@ -125,6 +125,10 @@ def publish(ctx, title, content, content_file, video, images, tags, mention, vis
             )
 
         status = result.get("status", "submitted")
+        if result.get("schedule"):
+            info(f"定时回读: {result['schedule']}")
+        if result.get("bgm"):
+            info(f"BGM: {result['bgm']}")
         if status == "published":
             success("发布成功! 🎉")
             if result.get("url"):

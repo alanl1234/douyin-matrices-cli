@@ -110,6 +110,47 @@ dy publish -t "测试" -c "测试" -v test.mp4 --dry-run
 dy publish -t "深度文章" --content-file desc.txt -v video.mp4
 ```
 
+**定时发布规则（平台限制）**：只能约「2 小时后 ~ 14 天内」，且每分钟只能落一条。
+超出窗口会在**上传前**直接报错，不会白跑一趟。先看可约日期：
+
+```bash
+dy bookable --hour 15        # 每天 15:00 还能约哪几天
+```
+
+定时设置成功后会回读时间；回读不一致会**中止发布**，绝不降级为「立即发布」。
+
+### 批量定时发布
+
+清单（JSON / YAML 均可，相对路径按清单所在目录解析）：
+
+```json
+{
+  "account": "default",
+  "posts": [
+    {
+      "title": "标题不超过20字",
+      "content": "正文……",
+      "images": ["imgs/01.png", "imgs/02.png"],
+      "tags": ["初中物理", "物理实验"],
+      "schedule": "2026-11-16T15:00:00+08:00",
+      "visibility": "公开"
+    }
+  ]
+}
+```
+
+```bash
+dy publish-batch posts.json --dry-run      # 只校验并打印计划
+dy publish-batch posts.json                # 串行发布，失败即停
+dy publish-batch posts.json --start 2 --end 5 --delay 30
+```
+
+每条发布后会做三重校验：状态必须是 `published`、定时回读必须与计划一致、
+创作者接口必须能查到该作品。任一不成立即整批中止，不做「失败继续跑」。
+
+**话题必须是平台实体**：脚本会逐个 `#` 触发话题面板再回车选中，并统计
+`data-mention="#"` 数量；数量不足（即变成黑色纯文本）会中止发布。
+
 ### 热榜
 
 ```bash

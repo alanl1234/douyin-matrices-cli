@@ -9,9 +9,21 @@ from __future__ import annotations
 import asyncio
 import os
 import random
-from datetime import datetime
 
 from dy_cli.utils import config
+from dy_cli.utils.schedule_window import (
+    ScheduleWindowError,
+    schedule_text,
+    validate_schedule,
+)
+
+# 不适合课堂/知识类内容的 BGM 关键词（命中即跳过；不用单字，避免误伤正常曲名）
+BGM_BLOCKLIST = (
+    "DJ", "dj", "Dj", "进行曲", "热歌", "喊麦", "摇滚", "电音", "魔性",
+    "搞笑", "卡点", "气氛", "狂欢", "节奏感", "土嗨",
+)
+# 优先搜索的柔和向关键词（随机顺序使用）
+BGM_SOFT_QUERIES = ("轻音乐", "纯音乐", "钢琴")
 
 
 class PlaywrightError(Exception):
@@ -195,22 +207,104 @@ class PlaywrightClient:
         except Exception:
             print(f"[dy] 可见范围设置失败（{visibility}），保持默认公开")
 
-    async def _fill_content(self, page, content: str, tags=None, mentions=None) -> None:
-        """填写正文，并可靠插入话题(#)与 @好友 chip（#3）。"""
+    async def _set_title(self, page, title: str) -> None:
+        """写入作品标题并回读校验。
+
+        平台上限 20 字：超长直接报错（不静默截断，避免和清单校验口径不一致）。
+        多个选择器按顺序兜底；全部失败抛 PlaywrightError，绝不静默跳过。
+        """
+        if not title:
+            return
+        text = title.strip()
+        if len(text) > 20:
+            raise PlaywrightError(f"标题超过 20 字（{len(text)}）：{text}")
+
+        last_err: Exception | None = None
+        for sel in (
+            'input[placeholder="添加作品标题"]',
+            '[class*="title"] input',
+            '[class*="title"] textarea',
+        ):
+            field = page.locator(sel).first
+            try:
+                if await field.count() == 0:
+                    continue
+                await field.wait_for(timeout=8000)
+                await field.click()
+                await field.fill(text)
+                got = (await field.input_value()).strip()
+            except Exception as exc:  # noqa: BLE001 - 选择器不命中才继续兜底
+                last_err = exc
+                continue
+            # 命中即认定目标控件：回读不符立即报错，绝不换靶重写第二个输入框
+            if got != text:
+                raise PlaywrightError(f"标题回读不一致: 期望 {text!r} 实际 {got!r}")
+            return
+        raise PlaywrightError(f"标题写入失败: {last_err}")
+
+    async def _assert_topics(self, page, tags) -> None:
+        """校验话题都成为平台实体；数量不足抛错（纯文本话题平台不认）。"""
+        expect = len(tags or [])
+        if not expect:
+            return
+        actual = await self.count_topic_entities(page)
+        if actual < expect:
+            raise PlaywrightError(
+                f"话题未全部识别为实体: 期望 {expect} 实际 {actual}（黑色纯文本话题无效，已中止）"
+            )
+
+    async def _fill_content(
+        self, page, content: str, tags=None, mentions=None, strict: bool = False
+    ) -> None:
+        """填写正文（支持多段），并插入话题(#)/@好友 实体。
+
+        strict=True 时编辑器缺失直接抛错；话题是否真的变成实体由调用方用
+        count_topic_entities() 二次校验（纯文本话题平台不认）。
+        """
         editor = page.locator('[contenteditable="true"]').first
         try:
-            await editor.wait_for(timeout=6000)
-        except Exception:
+            await editor.wait_for(timeout=10000)
+        except Exception as exc:
+            if strict:
+                raise PlaywrightError("未找到正文编辑器") from exc
             return
         await editor.click()
+        await page.wait_for_timeout(300)
         if content:
-            await page.keyboard.type(content, delay=40)
+            for i, para in enumerate(content.split("\n")):
+                if i:
+                    await page.keyboard.press("Enter")
+                await page.keyboard.type(para, delay=20)
+            await page.wait_for_timeout(400)
         for tag in (tags or []):
-            await page.keyboard.type(f"#{tag}", delay=40)
-            await self._commit_chip(page)
+            await self._insert_topic(page, tag)
         for m in (mentions or []):
-            await page.keyboard.type(f"@{m}", delay=40)
+            await page.keyboard.type(f" @{m}", delay=40)
             await self._commit_chip(page)
+        await page.wait_for_timeout(400)
+
+    async def _insert_topic(self, page, tag: str) -> None:
+        """插入话题实体：先敲 # 触发 mention 面板，再输入关键词、回车选中。
+
+        直接 type("#话题") 只会得到黑色纯文本，平台不识别，必须分两步。
+        """
+        await page.keyboard.type("#", delay=80)
+        await page.wait_for_timeout(1200)
+        await page.keyboard.type(tag, delay=70)
+        await page.wait_for_timeout(1600)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(500)
+
+    async def count_topic_entities(self, page) -> int:
+        """统计正文里真正的话题实体数量（只算 data-mention="#"，@好友不计）。"""
+        return int(
+            await page.evaluate(
+                """() => {
+                    const ed = document.querySelector('div[contenteditable="true"]');
+                    return ed ? ed.querySelectorAll('[data-mention="#"]').length : 0;
+                }"""
+            )
+        )
 
     async def _commit_chip(self, page) -> None:
         """话题/@ 输入后等待下拉建议，回车选中；无建议则空格分隔（#3 兜底）。"""
@@ -246,18 +340,19 @@ class PlaywrightClient:
     async def _wait_publish_result(self, page):
         """点击发布后判定真实结果，返回 (status, url, message)（#1 真实成功判定）。"""
         await page.wait_for_timeout(4000)
-        fail_kw = ["失败", "错误", "频繁", "审核", "请完善", "已存在", "违规", "不能", "无法", "不正确"]
+        fail_kw = ["失败", "错误", "频繁", "请完善", "已存在", "违规", "不能", "无法", "不正确"]
         success_kw = ["成功", "已发布", "提交成功"]
         toast = await page.evaluate(
             '()=>Array.from(document.querySelectorAll("[class*=toast]"))'
             '.map(t=>t.textContent.trim()).filter(Boolean)'
         )
         toast_str = " ".join(toast) if toast else ""
+        # 先判成功：「已提交审核」这类提示含「审核」二字，不能当失败
+        if any(k in toast_str for k in success_kw):
+            return ("published", await self._try_capture_work_url(page), "成功")
         if any(k in toast_str for k in fail_kw):
             reason = next((t for t in toast if any(k in t for k in fail_kw)), toast_str)
             return ("failed", None, reason)
-        if any(k in toast_str for k in success_kw):
-            return ("published", await self._try_capture_work_url(page), "成功")
         if "manage" in page.url:
             return ("published", await self._try_capture_work_url(page), "跳转作品管理页")
         for _ in range(10):
@@ -295,6 +390,11 @@ class PlaywrightClient:
             raise PlaywrightError(f"视频文件不存在: {video_path}")
         if not self.cookie_exists():
             raise PlaywrightError("未登录，请先运行: dy login")
+        if schedule_at:
+            try:
+                validate_schedule(schedule_at)
+            except ScheduleWindowError as exc:
+                raise PlaywrightError(str(exc)) from exc
 
         return _run_async(
             self._publish_video_async(
@@ -330,9 +430,17 @@ class PlaywrightClient:
                 # Check login (发布前断言登录态)
                 await self._assert_logged_in(page)
 
-                # Upload video file
-                upload_input = page.locator('input[type="file"]').first
-                await upload_input.set_input_files(video_path)
+                # Upload video file（按 accept 选视频位，避免误命中图片 input）
+                file_inputs = await page.evaluate(
+                    """() => Array.from(document.querySelectorAll('input[type=file]'))
+                        .map((el, i) => ({i, accept: el.accept || ''}))"""
+                )
+                video_idx = next(
+                    (x["i"] for x in file_inputs if "video" in x["accept"]), None
+                )
+                if video_idx is None:
+                    raise PlaywrightError("未找到视频上传控件（页面结构可能已变）")
+                await page.locator('input[type="file"]').nth(video_idx).set_input_files(video_path)
                 print(f"[dy] 正在上传视频: {os.path.basename(video_path)}")
 
                 # Wait for upload to complete (look for editor/title input)
@@ -346,26 +454,17 @@ class PlaywrightClient:
                         break
                     await page.wait_for_timeout(5000)
 
-                # Fill title — find the title input
-                title_input = page.locator('[class*="title"] input, [class*="title"] textarea').first
-                try:
-                    await title_input.wait_for(timeout=5000)
-                    await title_input.clear()
-                    await title_input.fill(title)
-                except Exception:
-                    # Try contenteditable
-                    pass
+                # Fill title（多选择器兜底，最终仍失败就抛错，不允许无标题发出）
+                await self._set_title(page, title)
 
-                # Fill description/content + 话题/@ (可靠插入 chip)
-                await self._fill_content(page, content, tags, mentions)
+                # Fill description/content + 话题/@（strict：编辑器缺失即失败）
+                await self._fill_content(page, content, tags, mentions, strict=True)
+                await self._assert_topics(page, tags)
 
                 # 可见范围留待封面上传后统一设置
                 # (实际设置见下方 _set_visibility 调用)
 
-                # Handle schedule
-                if schedule_at:
-                    await self._set_schedule_time(page, schedule_at)
-
+                # Handle schedule（硬校验）
                 # Set thumbnail if provided
                 if thumbnail_path and os.path.isfile(thumbnail_path):
                     try:
@@ -385,6 +484,12 @@ class PlaywrightClient:
                 # 设置可见范围 (覆盖 公开/好友可见/仅自己可见)
                 await self._set_visibility(page, visibility)
 
+                # 定时放在最后：封面/可见范围的交互会引起表单重挂载，
+                # 先写会被重置，且重置后不会再校验就点发布 = 最坏结果。
+                scheduled_at = None
+                if schedule_at:
+                    scheduled_at = await self._set_schedule_time(page, schedule_at)
+
                 # Click the EXACT "发布" button (not "高清发布")
                 await page.wait_for_timeout(2000)
                 clicked = await page.evaluate("""() => {
@@ -402,14 +507,15 @@ class PlaywrightClient:
                     print("[dy] 未找到发布按钮，内容已填写，请手动确认")
                     if not self.headless:
                         await page.wait_for_timeout(30000)
-                    return {"status": "submitted", "title": title,
+                    return {"status": "submitted", "title": title, "schedule": scheduled_at,
                             "message": "未找到发布按钮，请手动确认"}
 
                 status, url, message = await self._wait_publish_result(page)
                 print(f"[dy] 发布结果: {status} - {message}")
                 if url:
                     print(f"[dy] 作品链接: {url}")
-                return {"status": status, "title": title, "url": url, "message": message}
+                return {"status": status, "title": title, "url": url,
+                        "schedule": scheduled_at, "message": message}
 
             finally:
                 await context.storage_state(path=self.cookie_file)
@@ -469,78 +575,96 @@ class PlaywrightClient:
     # Publish image/text
     # ------------------------------------------------------------------
 
-    async def _apply_default_bgm(self, page) -> None:
-        """图文发布前自动选择系统默认/随机 BGM（best-effort，失败静默）。
+    async def _apply_default_bgm(self, page) -> str | None:
+        """选一首「不刺耳」的 BGM：搜索轻音乐/纯音乐/钢琴，黑名单过滤后随机。
 
-        抖音图文发布页存在"添加音乐"入口；若当前未配置 BGM，自动从
-        系统推荐音乐中随机选一首，避免因缺少/无效 BGM 导致发布报错。
-        任何步骤失败都只打印提示，绝不抛出异常、绝不阻断发布。
+        只认命中当前搜索词的结果行，避免抓到抽屉里无关曲目。
+        BGM 属加分项：失败返回 None 不阻断发布；但无论如何都要把抽屉关掉，
+        否则会遮住紧接着的「定时发布」单选。
         """
+        opened = False
         try:
-            # 1) 查找"添加音乐"入口（文案优先，class 兜底）
-            add_music = None
-            for sel in (
-                "text=添加音乐",
-                "text=添加背景音乐",
-                "text=选择音乐",
-                '[class*="addMusic"]',
-                '[class*="add-music"]',
-                '[class*="music-btn"]',
-                '[class*="bgm"] button',
-                '[class*="music"] button',
-            ):
-                loc = page.locator(sel).first
-                try:
-                    if await loc.count() > 0 and await loc.is_visible():
-                        add_music = loc
-                        break
-                except Exception:
-                    continue
-            if add_music is None:
-                return  # 页面无 BGM 功能，无需处理
-
-            await add_music.click()
-            await page.wait_for_timeout(1200)
-
-            # 2) 优先切换到"推荐 / 系统推荐 / 热门"分类
-            for tab_sel in ("text=推荐", "text=系统推荐", "text=热门", "text=为你推荐"):
-                tab = page.locator(tab_sel).first
-                try:
-                    if await tab.count() > 0 and await tab.is_visible():
-                        await tab.click()
-                        await page.wait_for_timeout(800)
-                        break
-                except Exception:
-                    continue
-
-            # 3) 从可见音乐列表中随机选一首
-            items = page.locator(
-                '[class*="music-item"], [class*="song-item"], [class*="music-list"] li, '
-                '[class*="recommend"] [class*="item"], [class*="audio"] [class*="item"], '
-                '[class*="music"] li'
+            opened = await page.evaluate(
+                """() => {
+                    const els = [...document.querySelectorAll('*')]
+                        .filter(e => (e.textContent || '').trim() === '选择音乐');
+                    const t = els.at(-1);
+                    if (!t) return false;
+                    (t.closest('[class*=music]') || t).click();
+                    return true;
+                }"""
             )
-            n = await items.count()
-            if n == 0:
-                # 面板没有可选音乐，直接关闭
-                await page.keyboard.press("Escape")
-                return
-            idx = random.randint(0, n - 1)
-            await items.nth(idx).click()
-            await page.wait_for_timeout(1000)
+            if not opened:
+                return None
+            await page.wait_for_timeout(3000)
 
-            # 4) 确认使用（部分版本需要点"使用 / 确定 / 完成"）
-            for ok_sel in ("text=使用", "text=确定", "text=完成", "text=保存"):
-                ok_btn = page.locator(ok_sel).first
-                try:
-                    if await ok_btn.count() > 0 and await ok_btn.is_visible():
-                        await ok_btn.click()
-                        await page.wait_for_timeout(600)
-                        break
-                except Exception:
+            box = page.locator('input[placeholder="搜索音乐"]').first
+            if await box.count() == 0:
+                await page.keyboard.press("Escape")
+                return None
+
+            queries = list(BGM_SOFT_QUERIES)
+            random.shuffle(queries)
+            for query in queries:
+                await box.click()
+                await box.fill("")
+                await box.fill(query)
+                await page.wait_for_timeout(3500)
+                titles = await page.evaluate(
+                    """() => {
+                        const out = [];
+                        document.querySelectorAll('[class*=music],[class*=song],[class*=Music],[class*=Song]').forEach(el => {
+                            const t = (el.textContent || '').trim();
+                            const r = el.getBoundingClientRect();
+                            if (t && t.length > 2 && t.length < 45 && r.width > 150 && r.height > 16 && r.x > 900) out.push(t);
+                        });
+                        return [...new Set(out)].filter(t => t !== '选择音乐').slice(0, 20);
+                    }"""
+                )
+                safe = [
+                    t for t in titles
+                    if query in t and not any(b in t for b in BGM_BLOCKLIST)
+                ]
+                if not safe:
                     continue
-            print("[dy] 已选择系统默认 BGM（随机）")
+                pick = random.choice(safe[:6])
+                clicked = await page.evaluate(
+                    """(want) => {
+                        const rows = [...document.querySelectorAll('*')].filter(el => {
+                            const r = el.getBoundingClientRect();
+                            const t = (el.textContent || '').trim();
+                            return r.x > 900 && r.width > 150 && r.height > 20 && r.height < 140 && t === want;
+                        });
+                        if (!rows.length) return false;
+                        const target = rows[0];
+                        target.scrollIntoView({block: 'center'});
+                        let node = target;
+                        for (let i = 0; i < 6 && node; i++, node = node.parentElement) {
+                            const btn = [...node.querySelectorAll('*')]
+                                .find(e => (e.textContent || '').trim() === '使用');
+                            if (btn) { btn.click(); return true; }
+                        }
+                        return false;
+                    }""",
+                    pick,
+                )
+                if clicked:
+                    await page.wait_for_timeout(2000)
+                    await page.keyboard.press("Escape")
+                    await page.wait_for_timeout(600)
+                    print(f"[dy] 已选 BGM: {pick}")
+                    return pick
+            return None
         except Exception as e:
-            print(f"[dy] BGM 自动选择跳过: {e}")
+            print(f"[dy] BGM 选择跳过: {e}")
+            return None
+        finally:
+            if opened:
+                try:
+                    await page.keyboard.press("Escape")
+                    await page.wait_for_timeout(600)
+                except Exception:
+                    pass
 
     def publish_image_text(
         self,
@@ -558,6 +682,11 @@ class PlaywrightClient:
                 raise PlaywrightError(f"图片文件不存在: {img}")
         if not self.cookie_exists():
             raise PlaywrightError("未登录，请先运行: dy login")
+        if schedule_at:
+            try:
+                validate_schedule(schedule_at)
+            except ScheduleWindowError as exc:
+                raise PlaywrightError(str(exc)) from exc
 
         return _run_async(
             self._publish_image_text_async(
@@ -604,39 +733,57 @@ class PlaywrightClient:
                 # Upload images — only local files
                 local_images = [img for img in images if not img.startswith("http")]
                 if local_images:
-                    upload_input = page.locator('input[type="file"][accept*="image"]').first
-                    try:
-                        await upload_input.wait_for(timeout=5000)
-                        await upload_input.set_input_files(local_images)
-                        print(f"[dy] 正在上传 {len(local_images)} 张图片")
-                        await page.wait_for_timeout(3000)
-                    except Exception:
-                        # Try generic file input
-                        upload_input = page.locator('input[type="file"]').first
-                        await upload_input.set_input_files(local_images)
-                        await page.wait_for_timeout(3000)
+                    # 必须按 accept 选图片 input：页面上第一个 file input 是视频位，
+                    # 误用会报 "Non-multiple file input can only accept single file"
+                    file_inputs = await page.evaluate(
+                        """() => Array.from(document.querySelectorAll('input[type=file]'))
+                            .map((el, i) => ({i, accept: el.accept || ''}))"""
+                    )
+                    target_idx = next(
+                        (x["i"] for x in file_inputs if "image" in x["accept"]), None
+                    )
+                    if target_idx is None:
+                        raise PlaywrightError("未找到图片上传控件（页面结构可能已变）")
+                    await page.locator('input[type="file"]').nth(target_idx).set_input_files(
+                        local_images
+                    )
+                    print(f"[dy] 正在上传 {len(local_images)} 张图片")
+                    await page.wait_for_timeout(3000)
+                    # 等上传收尾，避免在 0% 时就去点其它控件
+                    for _ in range(120):
+                        body = await page.inner_text("body")
+                        if "取消上传" not in body and "0%" not in body:
+                            break
+                        await page.wait_for_timeout(1000)
+                    else:
+                        raise PlaywrightError("图片上传超时（2 分钟内未完成）")
 
-                # Fill title
-                title_input = page.locator('[class*="title"] input, [class*="title"] textarea').first
-                try:
-                    await title_input.wait_for(timeout=5000)
-                    await title_input.clear()
-                    await title_input.fill(title)
-                except Exception:
-                    pass
+                # Fill title（回读校验，写不进直接抛错）
+                await self._set_title(page, title)
 
-                # Fill content + 话题/@ (可靠插入 chip)
-                await self._fill_content(page, content, tags, mentions)
+                # Fill content + 话题/@（strict：编辑器缺失即失败）
+                await self._fill_content(page, content, tags, mentions, strict=True)
+
+                # 话题必须是实体（data-mention），纯文本平台不认
+                expect_tags = len(tags or [])
+                if expect_tags:
+                    actual = await self.count_topic_entities(page)
+                    if actual < expect_tags:
+                        raise PlaywrightError(
+                            f"话题未全部识别为实体: 期望 {expect_tags} 实际 {actual}"
+                            "（黑色纯文本话题无效，已中止）"
+                        )
 
                 # 设置可见范围
                 await self._set_visibility(page, visibility)
 
-                # 自动选择系统默认 BGM（best-effort，失败不影响发布）
-                await self._apply_default_bgm(page)
+                # 自动选择柔和向 BGM（失败不影响发布）
+                bgm = await self._apply_default_bgm(page)
 
-                # Handle schedule
+                # 定时（硬校验：失败抛错，绝不降级为立即发布）
+                scheduled_at = None
                 if schedule_at:
-                    await self._set_schedule_time(page, schedule_at)
+                    scheduled_at = await self._set_schedule_time(page, schedule_at)
 
                 # Click the EXACT "发布" button (not "高清发布")
                 await page.wait_for_timeout(2000)
@@ -655,14 +802,15 @@ class PlaywrightClient:
                     print("[dy] 未找到发布按钮，内容已填写，请手动确认")
                     if not self.headless:
                         await page.wait_for_timeout(30000)
-                    return {"status": "submitted", "title": title,
-                            "message": "未找到发布按钮，请手动确认"}
+                    return {"status": "submitted", "title": title, "schedule": scheduled_at,
+                            "bgm": bgm, "message": "未找到发布按钮，请手动确认"}
 
                 status, url, message = await self._wait_publish_result(page)
                 print(f"[dy] 发布结果: {status} - {message}")
                 if url:
                     print(f"[dy] 作品链接: {url}")
-                return {"status": status, "title": title, "url": url, "message": message}
+                return {"status": status, "title": title, "url": url,
+                        "schedule": scheduled_at, "bgm": bgm, "message": message}
 
             finally:
                 await context.storage_state(path=self.cookie_file)
@@ -672,27 +820,72 @@ class PlaywrightClient:
     # Schedule helper
     # ------------------------------------------------------------------
 
-    async def _set_schedule_time(self, page, schedule_at: str):
-        """设置定时发布时间。"""
+    async def _set_schedule_time(self, page, schedule_at: str) -> str:
+        """设置定时发布时间并回读校验。
+
+        任何一步不成立都抛 PlaywrightError，调用方据此中止发布——
+        绝不回落为「立即发布」（旧实现对异常只打印一句话，会把整批定时
+        内容在同一分钟全部发出去）。
+        返回实际写入的时间字符串 ``YYYY-MM-DD HH:MM``。
+        """
         try:
-            # Parse datetime
-            dt = datetime.fromisoformat(schedule_at)
-            date_str = dt.strftime("%Y年%m月%d日 %H:%M")
+            dt = validate_schedule(schedule_at)
+        except ScheduleWindowError as exc:
+            raise PlaywrightError(str(exc)) from exc
 
-            # Find schedule checkbox/toggle
-            schedule_toggle = page.locator('text=定时发布').first
-            if await schedule_toggle.count() > 0:
-                await schedule_toggle.click()
-                await page.wait_for_timeout(1000)
+        want = schedule_text(dt)
 
-                # Find and fill the datetime picker
-                time_input = page.locator('[class*="schedule"] input, [class*="time"] input').first
-                if await time_input.count() > 0:
-                    await time_input.clear()
-                    await time_input.fill(date_str)
-                    await page.keyboard.press("Enter")
-        except Exception:
-            print("[dy] 定时发布设置失败，将立即发布")
+        # 1) 选中「定时发布」单选（重试 + JS 兜底）
+        selected = False
+        for _ in range(3):
+            try:
+                await page.locator('label:has-text("定时发布")').first.click(
+                    force=True, timeout=15000
+                )
+                selected = True
+                break
+            except Exception:
+                await page.wait_for_timeout(1200)
+                selected = bool(
+                    await page.evaluate(
+                        """() => {
+                            const l = [...document.querySelectorAll('label')]
+                                .find(e => (e.textContent || '').trim() === '定时发布');
+                            if (!l) return false;
+                            l.click();
+                            return true;
+                        }"""
+                    )
+                )
+                if selected:
+                    break
+        if not selected:
+            raise PlaywrightError("无法选中「定时发布」，已中止（未发布）")
+        await page.wait_for_timeout(1200)
+
+        # 2) 写入时间并回读
+        field = page.locator('input[placeholder="日期和时间"]').first
+        try:
+            await field.wait_for(timeout=10000)
+        except Exception as exc:
+            raise PlaywrightError("定时时间输入框未出现，已中止（未发布）") from exc
+        await field.click()
+        await field.fill(want)
+        await page.wait_for_timeout(500)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(1000)
+        got = (await field.input_value()).strip()
+        try:
+            same = schedule_text(got) == want
+        except ScheduleWindowError as exc:
+            raise PlaywrightError(
+                f"无法解析平台回显的定时时间 {got!r}（{exc}），已中止（未发布）"
+            ) from exc
+        if not same:
+            raise PlaywrightError(
+                f"定时时间回读不一致: 期望 {want} 实际 {got}（已中止，未发布）"
+            )
+        return want
 
     # ------------------------------------------------------------------
     # Analytics
