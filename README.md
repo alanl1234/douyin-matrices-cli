@@ -114,6 +114,8 @@ dy publish -t "标题" -c "描述" -i img1.jpg -i img2.jpg            # Image po
 dy publish -t "标题" -v v.mp4 --tags AI --visibility 仅自己可见    # Private + tags
 dy publish -t "标题" -v v.mp4 --schedule "2026-03-20T08:00:00+08:00"  # Scheduled
 dy pub -t "标题" -v v.mp4 --dry-run                              # Preview only
+dy bookable --hour 15                # Bookable dates (2h ~ 14d window)
+dy publish-batch posts.json          # Batch scheduled posts (stops on first failure)
 
 # ─── Interact ─────────────────────────────────────
 dy like 1                            # Like the 1st result from the latest listing

@@ -764,15 +764,8 @@ class PlaywrightClient:
                 # Fill content + 话题/@（strict：编辑器缺失即失败）
                 await self._fill_content(page, content, tags, mentions, strict=True)
 
-                # 话题必须是实体（data-mention），纯文本平台不认
-                expect_tags = len(tags or [])
-                if expect_tags:
-                    actual = await self.count_topic_entities(page)
-                    if actual < expect_tags:
-                        raise PlaywrightError(
-                            f"话题未全部识别为实体: 期望 {expect_tags} 实际 {actual}"
-                            "（黑色纯文本话题无效，已中止）"
-                        )
+                # 话题必须是实体（data-mention="#"），纯文本平台不认
+                await self._assert_topics(page, tags)
 
                 # 设置可见范围
                 await self._set_visibility(page, visibility)
