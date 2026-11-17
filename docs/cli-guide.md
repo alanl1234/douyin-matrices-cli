@@ -151,6 +151,26 @@ dy publish-batch posts.json --start 2 --end 5 --delay 30
 **话题必须是平台实体**：脚本会逐个 `#` 触发话题面板再回车选中，并统计
 `data-mention="#"` 数量；数量不足（即变成黑色纯文本）会中止发布。
 
+### 辅助脚本（`scripts/`）
+
+内容多的时候不用手写清单，三步走：
+
+```bash
+# 1) 内容清单 → 发布清单（自动排期、标题长度/图片存在/时间查重校验）
+python scripts/build_manifest.py posts.json --start 2026-12-01 --every 1 --hour 15:00 --check-window
+
+# 2) 灰度：先单发一条，确认页序、话题、定时都对
+python scripts/publish_one.py manifest.json --no 1 --dry-run
+python scripts/publish_one.py manifest.json --no 1
+
+# 3) 确认无误再跑剩余批次
+dy publish-batch manifest.json --start 2
+```
+
+`posts.json` 结构见 `scripts/build_manifest.py` 头部示例（`no` / `title` / `caption` /
+`images` / `tags`，`images` 顺序即发布页序）。两个脚本都不联网、不碰浏览器以外的写入，
+失败一律非零退出。
+
 ### 热榜
 
 ```bash

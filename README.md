@@ -335,6 +335,7 @@ dy_cli/
 │   ├── search.py        # search / read / detail / comments / trending / live
 │   ├── download.py      # dl / download
 │   ├── publish.py       # publish / pub
+│   ├── publish_batch.py # publish-batch / bookable
 │   ├── interact.py      # like / fav / comment / follow
 │   ├── account.py       # account add / list / verify / toggle / persona
 │   └── ...
@@ -343,6 +344,7 @@ dy_cli/
 │   ├── signature.py     # Request signature generation
 │   ├── export.py        # JSON / CSV / YAML export
 │   ├── index_cache.py   # Short-index navigation cache
+│   ├── schedule_window.py # 2h~14d scheduling window validation
 │   └── envelope.py      # Structured ok/schema_version/data/error envelope
 └── dashboard/
     ├── __main__.py      # dy-dashboard entry point (FastAPI)
